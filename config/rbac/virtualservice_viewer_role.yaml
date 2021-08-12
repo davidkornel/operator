@@ -1,0 +1,20 @@
+# permissions for end users to view virtualservices.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: virtualservice-viewer-role
+rules:
+- apiGroups:
+  - servicemesh.l7mp.io
+  resources:
+  - virtualservices
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - servicemesh.l7mp.io
+  resources:
+  - virtualservices/status
+  verbs:
+  - get

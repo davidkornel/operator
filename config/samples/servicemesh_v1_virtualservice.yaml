@@ -1,0 +1,29 @@
+apiVersion: servicemesh.l7mp.io/v1
+kind: VirtualService
+metadata:
+  name: virtualservice-sample
+spec:
+  selector: k8s-selector
+  listeners:
+    - name: ingress-rtp-caller-id-l
+      udp:
+        port: 31400
+        cluster:
+          name: ingress-rtp-caller-id-c
+          service_discovery: strictdns
+          health_check:
+            interval: 100
+            protocol: TCP
+          endpoints:
+            - name: endpoint-name
+              host:
+                selector: tcp-echo
+              port: 1234
+              health_check_port: 1233
+            - name: endpoint-name
+              host:
+                address: tcp-echo.default.svc
+              port: 1234
+            #- name: endpoint-name
+            #  host: 127.0.0.1
+            #  port: 1234
