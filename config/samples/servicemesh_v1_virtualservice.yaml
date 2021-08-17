@@ -3,7 +3,8 @@ kind: VirtualService
 metadata:
   name: virtualservice-sample
 spec:
-  selector: k8s-selector
+  selector:
+    app: envoy-ingress
   listeners:
     - name: ingress-rtp-caller-id-l
       udp:
@@ -14,16 +15,18 @@ spec:
           health_check:
             interval: 100
             protocol: TCP
+          hash_key: callid
           endpoints:
             - name: endpoint-name
               host:
-                selector: tcp-echo
+                selector:
+                  app: tcp-echo
               port: 1234
               health_check_port: 1233
-            - name: endpoint-name
-              host:
-                address: tcp-echo.default.svc
-              port: 1234
+#            - name: endpoint-name
+#              host:
+#                address: tcp-echo.default.svc
+#              port: 1234
             #- name: endpoint-name
             #  host: 127.0.0.1
             #  port: 1234

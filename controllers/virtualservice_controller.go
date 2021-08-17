@@ -18,7 +18,8 @@ package controllers
 
 import (
 	"context"
-	"fmt"
+	"github.com/davidkornel/operator/state"
+
 	//metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -49,21 +50,18 @@ type VirtualServiceReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.9.2/pkg/reconcile
 func (r *VirtualServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	virtualservice := &l7mpiov1.VirtualService{}
 	err := r.Get(ctx, req.NamespacedName, virtualservice)
 	if err != nil {
 		return ctrl.Result{}, err
 	} else {
-		list := virtualservice.Spec.Listeners[0]
-		fmt.Printf("fmt: %+v \n", list)
-		fmt.Printf("fmt: %+v \n", virtualservice)
+		state.ClusterState.Vsvcs = append(state.ClusterState.Vsvcs, virtualservice.Spec)
+		logger.Info("New VSVC: ", "virtualservice", virtualservice.Name)
 
-		//l.Info("listenerspec: ", list)
+		state.VsvcChannel <- virtualservice.Spec
 	}
-	// your logic here
-
 	return ctrl.Result{}, nil
 }
 

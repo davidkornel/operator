@@ -94,6 +94,8 @@ spec:
                                 - port
                                 type: object
                               type: array
+                            hash_key:
+                              type: string
                             health_check:
                               description: HealthCheck Optional, if omitted all upstream
                                 hosts will be considered healthy all the time
@@ -115,6 +117,7 @@ spec:
                               type: string
                           required:
                           - endpoints
+                          - hash_key
                           - name
                           - service_discovery
                           type: object
