@@ -36,7 +36,7 @@ import (
 	"github.com/davidkornel/operator/controllers"
 
 	servicemeshv1 "github.com/davidkornel/operator/api/v1"
-	"github.com/davidkornel/operator/cluster"
+	//"github.com/davidkornel/operator/state"
 	"github.com/davidkornel/operator/controlplane"
 	//+kubebuilder:scaffold:imports
 )
@@ -78,7 +78,7 @@ func init() {
 	ctrl.SetLogger(l.Logger)
 
 	//cluster state
-	cluster.StateOfCluster = cluster.State{}
+	//state.ClusterState = state.Cluster{}
 
 	//controlplane
 
@@ -105,7 +105,7 @@ func main() {
 	// Run the xDS server
 	go func() {
 		setupLog.Info("controlplane runserver")
-		controlplane.RunServer(port, &l)
+		controlplane.RunServer(port)
 		wg.Done()
 	}()
 
