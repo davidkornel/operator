@@ -18,8 +18,7 @@ package controllers
 
 import (
 	"context"
-	v1 "github.com/davidkornel/operator/api/v1"
-	"github.com/davidkornel/operator/cluster"
+	"github.com/davidkornel/operator/state"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -70,9 +69,8 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	for _, label := range labelValues {
 		labelIsPresent := pod.Labels[labelKeys] == label
 		if labelIsPresent {
-			cluster.StateOfCluster.Pods[string(pod.UID)] = pod
+			state.ClusterState.Pods = append(state.ClusterState.Pods, pod)
 			logger.Info("pod found:", "name: ", pod.Name, " pod.uid: ", pod.UID)
-			logger.Info("vsvc list: ", v1.VirtualServiceList{})
 		}
 	}
 	return ctrl.Result{}, nil
