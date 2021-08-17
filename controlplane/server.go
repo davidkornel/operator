@@ -16,6 +16,8 @@ package controlplane
 import (
 	"fmt"
 	ds "github.com/davidkornel/operator/controlplane/discoveryservices"
+	"github.com/davidkornel/operator/state"
+
 	//"context"
 	//"fmt"
 	//clusterservice "github.com/envoyproxy/go-control-plane/envoy/service/cluster/v3"
@@ -44,37 +46,10 @@ func registerServer(grpcServer *grpc.Server, srv listenerservice.ListenerDiscove
 }
 
 // RunServer starts an xDS server at the given listenerPort.
-func RunServer(port uint, l *Logger) {
+func RunServer(port uint) {
 	logger := ctrl.Log.WithName("management server")
-	// gRPC golang library sets a very small upper bound for the number gRPC/h2
-	// streams over a single TCP connection. If a proxy multiplexes requests over
-	// a single connection to the management server, then it might lead to
-	// availability problems.
-	// Create a cache
-	//cache = cachev3.NewSnapshotCache(false, cachev3.IDHash{}, l)
-	//
-	//ctx := context.Background()
-	//cb := &testv3.Callbacks{Debug: false}
-	//srv3 := serverv3.NewServer(ctx, cache, cb)
-	//
-	//var grpcOptions []grpc.ServerOption
-	//grpcOptions = append(
-	//	grpcOptions,
-	//	grpc.MaxConcurrentStreams(grpcMaxConcurrentStreams),
-	//)
-	//grpcServer := grpc.NewServer(grpcOptions...)
-	//
-	//lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	//if err != nil {
-	//	logger.Error(err, "Managements server error: %s")
-	//}
-	//
-	//logger.Info("management server listening on ", "port:", port)
-	//
-	//if err = grpcServer.Serve(lis); err != nil {
-	//	logger.Error(err, "Error happened while serving the gRPC server")
-	//}
-	logger.Info("server.go here")
+	go VirtualServiceSpecHandler()
+
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		logger.Error(err, "Managements server error: %s")
@@ -97,5 +72,23 @@ func RunServer(port uint, l *Logger) {
 		logger.Error(e, "Error happened while serving the gRPC server")
 	} else {
 		logger.Info("Management server running at", "port:", port)
+	}
+}
+
+func VirtualServiceSpecHandler() {
+	logger := ctrl.Log.WithName("Vsvc spec handler")
+	for {
+		spec := <-state.VsvcChannel
+		uid, err := state.ClusterState.GetUidByLabel(spec.Selector)
+		if err != nil {
+			logger.Error(err, "Error occurred while trying to get uid by label selector")
+		}
+		logger.Info("", "uid:", uid)
+
+		el := ds.CreateEnvoyListenerConfigFromVsvcSpec(spec)
+		logger.Info("create envoy listener", "spec:", el)
+		state.LdsChannels[uid] <- el
+		logger.Info("received", "spec:", spec)
+
 	}
 }
