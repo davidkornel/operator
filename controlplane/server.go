@@ -17,10 +17,12 @@ import (
 	"fmt"
 	ds "github.com/davidkornel/operator/controlplane/discoveryservices"
 	"github.com/davidkornel/operator/state"
+	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 
 	//"context"
 	//"fmt"
-	//clusterservice "github.com/envoyproxy/go-control-plane/envoy/service/cluster/v3"
+	clusterservice "github.com/envoyproxy/go-control-plane/envoy/service/cluster/v3"
 	//endpointservice "github.com/envoyproxy/go-control-plane/envoy/service/endpoint/v3"
 	listenerservice "github.com/envoyproxy/go-control-plane/envoy/service/listener/v3"
 	cachev3 "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
@@ -38,11 +40,11 @@ var (
 	cache cachev3.SnapshotCache
 )
 
-func registerServer(grpcServer *grpc.Server, srv listenerservice.ListenerDiscoveryServiceServer) {
+func registerServer(grpcServer *grpc.Server, ldsServer listenerservice.ListenerDiscoveryServiceServer, cdsServer clusterservice.ClusterDiscoveryServiceServer) {
 	// register services
 	//	endpointservice.RegisterEndpointDiscoveryServiceServer(grpcServer, server)
-	//	clusterservice.RegisterClusterDiscoveryServiceServer(grpcServer, server)
-	listenerservice.RegisterListenerDiscoveryServiceServer(grpcServer, srv)
+	clusterservice.RegisterClusterDiscoveryServiceServer(grpcServer, cdsServer)
+	listenerservice.RegisterListenerDiscoveryServiceServer(grpcServer, ldsServer)
 }
 
 // RunServer starts an xDS server at the given listenerPort.
@@ -64,8 +66,7 @@ func RunServer(port uint) {
 		grpc.MaxConcurrentStreams(grpcMaxConcurrentStreams),
 	)
 	grpcServer := grpc.NewServer(grpcOptions...)
-	registerServer(grpcServer, ds.NewServer())
-	//pb.RegisterListenerDiscoveryServiceServer(grpcServer, ds.NewServer())
+	registerServer(grpcServer, ds.NewLdsServer(), ds.NewCdsServer())
 	e := grpcServer.Serve(lis)
 	if e != nil {
 		fmt.Println("Error happened while serving the gRPC server: ", e)
@@ -84,10 +85,16 @@ func VirtualServiceSpecHandler() {
 			logger.Error(err, "Error occurred while trying to get uid by label selector")
 		}
 		logger.Info("", "uid:", uid)
-
-		el := ds.CreateEnvoyListenerConfigFromVsvcSpec(spec)
-		logger.Info("create envoy listener", "spec:", el)
-		state.LdsChannels[uid] <- el
+		if _, ok := state.LdsChannels[uid]; !ok {
+			state.LdsChannels[uid] = make(chan []*listener.Listener)
+			logger.Info("LDS channel has been added for", "uid", uid)
+		}
+		if _, ok := state.CdsChannels[uid]; !ok {
+			state.CdsChannels[uid] = make(chan []*cluster.Cluster)
+			logger.Info("CDS channel has been added for", "uid", uid)
+		}
+		state.LdsChannels[uid] <- ds.CreateEnvoyListenerConfigFromVsvcSpec(spec)
+		state.CdsChannels[uid] <- ds.CreateEnvoyClusterConfigFromVsvcSpec(spec)
 		logger.Info("received", "spec:", spec)
 
 	}
