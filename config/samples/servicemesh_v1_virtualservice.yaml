@@ -6,11 +6,28 @@ spec:
   selector:
     app: envoy-ingress
   listeners:
-    - name: ingress-rtp-caller-id-l
+    - name: ingress-rtp-callid1-l
       udp:
-        port: 31400
+        port: 2001
         cluster:
-          name: ingress-rtp-caller-id-c
+          name: ingress-rtp-callid1-c
+          service_discovery: strictdns
+          health_check:
+            interval: 100
+            protocol: TCP
+          hash_key: callid
+          endpoints:
+            - name: endpoint-name
+              host:
+                selector:
+                  app: tcp-echo
+              port: 1234
+              health_check_port: 1233
+    - name: ingress-rtp-callid2-l
+      udp:
+        port: 2002
+        cluster:
+          name: ingress-rtp-callid2-c
           service_discovery: strictdns
           health_check:
             interval: 100

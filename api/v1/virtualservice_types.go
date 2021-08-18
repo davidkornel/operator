@@ -76,14 +76,14 @@ type Host struct {
 	//+kubebuilder:validation:Optional
 	//Exactly one of address or selector field should be used
 	//matchLabels is a map of {key,value} pairs.
-	Selector map[string]string `json:"selector,omitempty"`
+	Selector *map[string]string `json:"selector,omitempty"`
 
 	//+kubebuilder:validation:Optional
 	//Exactly one of address or selector field should be used
 	//		  Address of the upstream host.
 	//		  Can be an exact address like 127.0.0.1
 	//        Or a domain like my.domain
-	Address string `json:"address,omitempty"`
+	Address *string `json:"address,omitempty"`
 }
 
 type Endpoint struct {
@@ -101,15 +101,16 @@ type Endpoint struct {
 
 	//+kubebuilder:validation:Optional
 	// If HealthCheck configured in cluster definition this port will be used for health checking
-	HealthCheckPort uint32 `json:"health_check_port,omitempty"`
+	HealthCheckPort *uint32 `json:"health_check_port,omitempty"`
 }
 
 type Cluster struct {
-	Name             string `json:"name"`
+	Name string `json:"name"`
+	//+kubebuilder:validation:Enum=strictdns;eds
 	ServiceDiscovery string `json:"service_discovery"`
 	HashKey          string `json:"hash_key"`
 	//+kubebuilder:validation:Optional
-	HealthCheck HealthCheck `json:"health_check,omitempty"`
+	HealthCheck *HealthCheck `json:"health_check,omitempty"`
 	//+kubebuilder:validation:Required
 	Endpoints []Endpoint `json:"endpoints"`
 }

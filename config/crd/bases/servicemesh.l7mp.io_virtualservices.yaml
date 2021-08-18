@@ -114,6 +114,9 @@ spec:
                             name:
                               type: string
                             service_discovery:
+                              enum:
+                              - strictdns
+                              - eds
                               type: string
                           required:
                           - endpoints
