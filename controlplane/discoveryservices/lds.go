@@ -18,7 +18,15 @@ import (
 
 type listenerDiscoveryService struct {
 	pb.UnimplementedListenerDiscoveryServiceServer
-	//TODO to understand what should I add here
+}
+
+func NewLdsServer() *listenerDiscoveryService {
+	s := &listenerDiscoveryService{
+		UnimplementedListenerDiscoveryServiceServer: pb.UnimplementedListenerDiscoveryServiceServer{},
+	}
+	logger := ctrl.Log.WithName("LDS server")
+	logger.Info("init")
+	return s
 }
 
 func (s *listenerDiscoveryService) StreamListeners(server listenerservice.ListenerDiscoveryService_StreamListenersServer) error {
@@ -48,14 +56,15 @@ func (s *listenerDiscoveryService) DeltaListeners(server listenerservice.Listene
 		}
 		listeners := <-state.LdsChannels[ddr.Node.Id]
 		logger.Info("listeners", "l", listeners)
-		err = server.Send(CreateDeltaDiscoveryResponse(listeners))
+		err = server.Send(CreateListenerDeltaDiscoveryResponse(listeners))
 		if err != nil {
+			logger.Error(err, "Error occurred while sending cluster configuration to envoy")
 			return err
 		}
 	}
 }
 
-func CreateDeltaDiscoveryResponse(listeners []*listener.Listener) *envoyservicediscoveryv3.DeltaDiscoveryResponse {
+func CreateListenerDeltaDiscoveryResponse(listeners []*listener.Listener) *envoyservicediscoveryv3.DeltaDiscoveryResponse {
 	var resources []*envoyservicediscoveryv3.Resource
 	for _, l := range listeners {
 		r := &envoyservicediscoveryv3.Resource{
@@ -80,15 +89,6 @@ func CreateDeltaDiscoveryResponse(listeners []*listener.Listener) *envoyserviced
 func ConvertListenersToAny(l *listener.Listener) *any.Any {
 	listenerAny, _ := anypb.New(l)
 	return listenerAny
-}
-
-func NewServer() *listenerDiscoveryService {
-	s := &listenerDiscoveryService{
-		UnimplementedListenerDiscoveryServiceServer: pb.UnimplementedListenerDiscoveryServiceServer{},
-	}
-	logger := ctrl.Log.WithName("newserver")
-	logger.Info("newserver init")
-	return s
 }
 
 func CreateEnvoyListenerConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec) []*listener.Listener {
