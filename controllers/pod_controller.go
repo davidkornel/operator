@@ -66,11 +66,35 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		logger.Error(err, "unable to fetch Pod")
 		return ctrl.Result{}, err
 	}
+	isPodMarkedToBeDeleted := pod.GetDeletionTimestamp() != nil
+	if isPodMarkedToBeDeleted {
+		for i, p := range state.ClusterState.Pods {
+			if p.UID == pod.UID {
+				state.ClusterState.Pods = remove(state.ClusterState.Pods, i)
+				close(state.LdsChannels[string(pod.UID)])
+				close(state.CdsChannels[string(pod.UID)])
+				logger.Info("Removed pod from Pods", "uid", pod.UID)
+				logger.Info("Channels closed", "uid", pod.UID)
+				return ctrl.Result{}, nil
+			}
+		}
+		//logger.Info("Pod already removed from Pods", "uid", pod.UID)
+		return ctrl.Result{}, nil
+	}
 	for _, label := range labelValues {
 		labelIsPresent := pod.Labels[labelKeys] == label
 		if labelIsPresent {
-			state.ClusterState.Pods = append(state.ClusterState.Pods, pod)
-			logger.Info("pod found:", "name: ", pod.Name, " pod.uid: ", pod.UID)
+			if pod.Status.Phase == "Running" && pod.Status.PodIP != "" {
+				for i, p := range state.ClusterState.Pods {
+					if p.UID == pod.UID {
+						state.ClusterState.Pods[i] = pod
+						logger.Info("pod changed in Pods:", "name: ", pod.Name, "pod.uid: ", pod.UID)
+						return ctrl.Result{}, nil
+					}
+				}
+				state.ClusterState.Pods = append(state.ClusterState.Pods, pod)
+				logger.Info("pod added to Pods:", "name: ", pod.Name, " pod.uid: ", pod.UID)
+			}
 		}
 	}
 	return ctrl.Result{}, nil
@@ -81,4 +105,9 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}).
 		Complete(r)
+}
+
+func remove(s []corev1.Pod, i int) []corev1.Pod {
+	s[i] = s[len(s)-1]
+	return s[:len(s)-1]
 }
