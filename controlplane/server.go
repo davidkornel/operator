@@ -80,22 +80,24 @@ func VirtualServiceSpecHandler() {
 	logger := ctrl.Log.WithName("Vsvc spec handler")
 	for {
 		spec := <-state.VsvcChannel
-		uid, err := state.ClusterState.GetUidByLabel(spec.Selector)
+		uids, err := state.ClusterState.GetUidListByLabel(spec.Selector)
 		if err != nil {
 			logger.Error(err, "Error occurred while trying to get uid by label selector")
 		}
-		logger.Info("", "uid:", uid)
-		if _, ok := state.LdsChannels[uid]; !ok {
-			state.LdsChannels[uid] = make(chan []*listener.Listener)
-			logger.Info("LDS channel has been added for", "uid", uid)
+		for _, uid := range uids {
+			logger.Info("", "uid:", uid)
+			if _, ok := state.LdsChannels[uid]; !ok {
+				state.LdsChannels[uid] = make(chan []*listener.Listener)
+				logger.Info("LDS channel has been added for", "uid", uid)
+			}
+			if _, ok := state.CdsChannels[uid]; !ok {
+				state.CdsChannels[uid] = make(chan []*cluster.Cluster)
+				logger.Info("CDS channel has been added for", "uid", uid)
+			}
+			state.LdsChannels[uid] <- ds.CreateEnvoyListenerConfigFromVsvcSpec(spec)
+			state.CdsChannels[uid] <- ds.CreateEnvoyClusterConfigFromVsvcSpec(spec)
+			logger.Info("received", "spec:", spec)
 		}
-		if _, ok := state.CdsChannels[uid]; !ok {
-			state.CdsChannels[uid] = make(chan []*cluster.Cluster)
-			logger.Info("CDS channel has been added for", "uid", uid)
-		}
-		state.LdsChannels[uid] <- ds.CreateEnvoyListenerConfigFromVsvcSpec(spec)
-		state.CdsChannels[uid] <- ds.CreateEnvoyClusterConfigFromVsvcSpec(spec)
-		logger.Info("received", "spec:", spec)
 
 	}
 }

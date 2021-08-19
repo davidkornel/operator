@@ -40,6 +40,7 @@ func (s *listenerDiscoveryService) FetchListeners(ctx context.Context, request *
 func (s *listenerDiscoveryService) DeltaListeners(server listenerservice.ListenerDiscoveryService_DeltaListenersServer) error {
 	logger := ctrl.Log.WithName("LDS")
 	logger.Info("LDS INIT")
+	server.Context()
 	for {
 		//ddr delta discovery request
 		ddr, err := server.Recv()
@@ -54,12 +55,17 @@ func (s *listenerDiscoveryService) DeltaListeners(server listenerservice.Listene
 			state.LdsChannels[ddr.Node.Id] = make(chan []*listener.Listener)
 			logger.Info("Channel has been added for", "uid", ddr.Node.Id)
 		}
-		listeners := <-state.LdsChannels[ddr.Node.Id]
-		logger.Info("listeners", "l", listeners)
-		err = server.Send(CreateListenerDeltaDiscoveryResponse(listeners))
-		if err != nil {
-			logger.Error(err, "Error occurred while sending cluster configuration to envoy")
-			return err
+		listeners, isOpen := <-state.LdsChannels[ddr.Node.Id]
+		if isOpen {
+			logger.Info("listeners", "l", listeners)
+			err = server.Send(CreateListenerDeltaDiscoveryResponse(listeners))
+			if err != nil {
+				logger.Error(err, "Error occurred while sending cluster configuration to envoy")
+				return err
+			}
+		} else {
+			//TODO End connection from server somehow
+			logger.Info("gRPC connection should have ended here")
 		}
 	}
 }

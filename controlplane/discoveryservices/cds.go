@@ -36,8 +36,8 @@ func (c clusterDiscoveryService) FetchClusters(ctx context.Context, request *env
 }
 
 func (c clusterDiscoveryService) DeltaClusters(server clusterservice.ClusterDiscoveryService_DeltaClustersServer) error {
-	logger := ctrl.Log.WithName("LDS")
-	logger.Info("LDS INIT")
+	logger := ctrl.Log.WithName("CDS")
+	logger.Info("CDS INIT")
 	for {
 		//ddr delta discovery request
 		ddr, err := server.Recv()
@@ -52,12 +52,17 @@ func (c clusterDiscoveryService) DeltaClusters(server clusterservice.ClusterDisc
 			state.CdsChannels[ddr.Node.Id] = make(chan []*cluster.Cluster)
 			logger.Info("Channel has been added for", "uid", ddr.Node.Id)
 		}
-		clusters := <-state.CdsChannels[ddr.Node.Id]
-		logger.Info("clusters", "c", clusters)
-		err = server.Send(CreateClusterDeltaDiscoveryResponse(clusters))
-		if err != nil {
-			logger.Error(err, "Error occurred while sending cluster configuration to envoy")
-			return err
+		clusters, isOpen := <-state.CdsChannels[ddr.Node.Id]
+		if isOpen {
+			logger.Info("clusters", "c", clusters)
+			err = server.Send(CreateClusterDeltaDiscoveryResponse(clusters))
+			if err != nil {
+				logger.Error(err, "Error occurred while sending cluster configuration to envoy")
+				return err
+			}
+		} else {
+			//TODO End connection from server somehow
+			logger.Info("gRPC connection should have ended here")
 		}
 	}
 }
@@ -113,27 +118,29 @@ func CreateEnvoyClusterConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec) []*c
 			LbPolicy: cluster.Cluster_MAGLEV,
 		}
 		if l.Udp.Cluster.HealthCheck != nil {
-			c.HealthChecks = []*core.HealthCheck{{
-				Timeout:            durationpb.New(100 * time.Millisecond),
-				Interval:           durationpb.New(100 * time.Millisecond),
-				UnhealthyThreshold: &wrappers.UInt32Value{Value: 1},
-				HealthyThreshold:   &wrappers.UInt32Value{Value: 1},
-				HealthChecker: &core.HealthCheck_TcpHealthCheck_{
-					TcpHealthCheck: &core.HealthCheck_TcpHealthCheck{
-						Send: &core.HealthCheck_Payload{
-							Payload: &core.HealthCheck_Payload_Text{
-								Text: "000000FF",
+			if l.Udp.Cluster.HealthCheck.Protocol == "TCP" {
+				c.HealthChecks = []*core.HealthCheck{{
+					Timeout:            durationpb.New(100 * time.Millisecond),
+					Interval:           durationpb.New(100 * time.Millisecond),
+					UnhealthyThreshold: &wrappers.UInt32Value{Value: 1},
+					HealthyThreshold:   &wrappers.UInt32Value{Value: 1},
+					HealthChecker: &core.HealthCheck_TcpHealthCheck_{
+						TcpHealthCheck: &core.HealthCheck_TcpHealthCheck{
+							Send: &core.HealthCheck_Payload{
+								Payload: &core.HealthCheck_Payload_Text{
+									Text: "000000FF",
+								},
 							},
+							Receive: []*core.HealthCheck_Payload{{
+								Payload: &core.HealthCheck_Payload_Text{
+									Text: "000000FF",
+								},
+							}},
 						},
-						Receive: []*core.HealthCheck_Payload{{
-							Payload: &core.HealthCheck_Payload_Text{
-								Text: "000000FF",
-							},
-						}},
 					},
-				},
-				NoTrafficInterval: durationpb.New(1 * time.Second),
-			}}
+					NoTrafficInterval: durationpb.New(1 * time.Second),
+				}}
+			}
 		}
 
 		switch l.Udp.Cluster.ServiceDiscovery {
@@ -142,7 +149,6 @@ func CreateEnvoyClusterConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec) []*c
 		case "eds":
 			//TODO handle eds
 			createEdsConfig(c)
-
 		}
 
 		clusters = append(clusters, c)
@@ -190,26 +196,28 @@ func createEndpoint(c l7mpiov1.Cluster) *endpoint.ClusterLoadAssignment {
 	}
 	lbEndpoints := make([]*endpoint.LbEndpoint, len(c.Endpoints))
 	for _, e := range c.Endpoints {
-		newEndpoint := &endpoint.LbEndpoint{
-			HostIdentifier: &endpoint.LbEndpoint_Endpoint{
-				Endpoint: &endpoint.Endpoint{
-					Address: &core.Address{
-						Address: &core.Address_SocketAddress{
-							SocketAddress: &core.SocketAddress{
-								Protocol: core.SocketAddress_UDP,
-								Address:  fillAddress(e.Host),
-								PortSpecifier: &core.SocketAddress_PortValue{
-									PortValue: e.Port,
+		for _, a := range fillAddress(e.Host) {
+			newEndpoint := &endpoint.LbEndpoint{
+				HostIdentifier: &endpoint.LbEndpoint_Endpoint{
+					Endpoint: &endpoint.Endpoint{
+						Address: &core.Address{
+							Address: &core.Address_SocketAddress{
+								SocketAddress: &core.SocketAddress{
+									Protocol: core.SocketAddress_UDP,
+									Address:  a,
+									PortSpecifier: &core.SocketAddress_PortValue{
+										PortValue: e.Port,
+									},
 								},
 							},
 						},
+						HealthCheckConfig: createEndpointHealthCheckConfig(e),
 					},
-					HealthCheckConfig: createEndpointHealthCheckConfig(e),
 				},
-			},
-			Metadata: &core.Metadata{FilterMetadata: createStruct(fillAddress(e.Host))},
+				Metadata: &core.Metadata{FilterMetadata: createStruct(a)},
+			}
+			lbEndpoints = append(lbEndpoints, newEndpoint)
 		}
-		lbEndpoints = append(lbEndpoints, newEndpoint)
 	}
 	localityLbEndpoints := []*endpoint.LocalityLbEndpoints{{LbEndpoints: lbEndpoints}}
 	loadAssignment.Endpoints = localityLbEndpoints
@@ -236,20 +244,25 @@ func createStruct(value string) map[string]*structpb.Struct {
 	return map[string]*_struct.Struct{"envoy.lb": m}
 }
 
-func fillAddress(host l7mpiov1.Host) string {
+func fillAddress(host l7mpiov1.Host) []string {
+	addressList := make([]string, 0)
 	if host.Address != nil {
-		return *host.Address
+		addressList = append(addressList, *host.Address)
+		return addressList
 	}
 	if host.Selector != nil {
-		uid, err := state.ClusterState.GetUidByLabel(*host.Selector)
+		uids, err := state.ClusterState.GetUidListByLabel(*host.Selector)
 		if err != nil {
 			ctrl.Log.WithName("Fill address").Error(err, "")
 		}
-		address, e := state.ClusterState.GetAddressByUid(types2.UID(uid))
-		if e != nil {
-			ctrl.Log.WithName("Fill address").Error(e, "")
+		for _, uid := range uids {
+			address, e := state.ClusterState.GetAddressByUid(types2.UID(uid))
+			if e != nil {
+				ctrl.Log.WithName("Fill address").Error(e, "")
+			}
+			addressList = append(addressList, address)
 		}
-		return address
+		return addressList
 	}
-	return ""
+	return addressList
 }
