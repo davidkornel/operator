@@ -39,13 +39,17 @@ func (s *KubernetesCluster) GetAddressByUid(uid types.UID) (string, error) {
 	return "", errors.New("there is no pod with the given uid")
 }
 
-func (s *KubernetesCluster) GetUidByLabel(m map[string]string) (string, error) {
+func (s *KubernetesCluster) GetUidListByLabel(m map[string]string) ([]string, error) {
+	stringList := make([]string, 0)
 	for k, v := range m {
 		for _, p := range s.Pods {
 			if p.Labels[k] == v {
-				return string(p.UID), nil
+				stringList = append(stringList, string(p.UID))
 			}
 		}
 	}
-	return "", errors.New("there is no pod with the given label")
+	if len(stringList) == 0 {
+		return stringList, errors.New("there is no pod with the given label")
+	}
+	return stringList, nil
 }
