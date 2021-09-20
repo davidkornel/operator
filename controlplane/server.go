@@ -17,9 +17,6 @@ import (
 	"fmt"
 	ds "github.com/davidkornel/operator/controlplane/discoveryservices"
 	"github.com/davidkornel/operator/state"
-	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
-	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
-
 	//"context"
 	//"fmt"
 	clusterservice "github.com/envoyproxy/go-control-plane/envoy/service/cluster/v3"
@@ -87,15 +84,21 @@ func VirtualServiceSpecHandler() {
 		for _, uid := range uids {
 			logger.Info("", "uid:", uid)
 			if _, ok := state.LdsChannels[uid]; !ok {
-				state.LdsChannels[uid] = make(chan []*listener.Listener)
+				state.LdsChannels[uid] = make(chan state.SignalMessageOnLdsChannels)
 				logger.Info("LDS channel has been added for", "uid", uid)
 			}
 			if _, ok := state.CdsChannels[uid]; !ok {
-				state.CdsChannels[uid] = make(chan []*cluster.Cluster)
+				state.CdsChannels[uid] = make(chan state.SignalMessageOnCdsChannels)
 				logger.Info("CDS channel has been added for", "uid", uid)
 			}
-			state.LdsChannels[uid] <- ds.CreateEnvoyListenerConfigFromVsvcSpec(spec)
-			state.CdsChannels[uid] <- ds.CreateEnvoyClusterConfigFromVsvcSpec(spec)
+			state.LdsChannels[uid] <- state.SignalMessageOnLdsChannels{
+				Verb:      0, //Add
+				Resources: ds.CreateEnvoyListenerConfigFromVsvcSpec(spec),
+			}
+			state.CdsChannels[uid] <- state.SignalMessageOnCdsChannels{
+				Verb:      0,
+				Resources: ds.CreateEnvoyClusterConfigFromVsvcSpec(spec),
+			}
 			logger.Info("received", "spec:", spec)
 		}
 
