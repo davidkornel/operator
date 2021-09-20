@@ -9,6 +9,23 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+type Verb int
+
+const (
+	Add Verb = iota
+	Delete
+	Change
+)
+
+type SignalMessageOnLdsChannels struct {
+	Verb      Verb
+	Resources []*listener.Listener
+}
+type SignalMessageOnCdsChannels struct {
+	Verb      Verb
+	Resources []*cluster.Cluster
+}
+
 // KubernetesCluster State of the k8s cluster
 type KubernetesCluster struct {
 	Pods  []corev1.Pod
@@ -22,12 +39,12 @@ var (
 	//which is the same as the pod UID
 	//where the container of the envoy instance is located in
 	//Used for signaling to the gRPC server that there is config available for configuration
-	LdsChannels = make(map[string]chan []*listener.Listener)
+	LdsChannels = make(map[string]chan SignalMessageOnLdsChannels)
 	// CdsChannels Keys are the 'node.id's from the connected envoy instance
 	//which is the same as the pod UID
 	//where the container of the envoy instance is located in
 	//Used for signaling to the gRPC server that there is config available for configuration
-	CdsChannels = make(map[string]chan []*cluster.Cluster)
+	CdsChannels = make(map[string]chan SignalMessageOnCdsChannels)
 )
 
 func (s *KubernetesCluster) GetAddressByUid(uid types.UID) (string, error) {
