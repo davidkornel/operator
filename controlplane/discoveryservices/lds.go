@@ -52,27 +52,46 @@ func (s *listenerDiscoveryService) DeltaListeners(server listenerservice.Listene
 		}
 		logger.Info("Request:", "Node-id: ", ddr.Node.Id)
 		if _, ok := state.LdsChannels[ddr.Node.Id]; !ok {
-			state.LdsChannels[ddr.Node.Id] = make(chan []*listener.Listener)
+			state.LdsChannels[ddr.Node.Id] = make(chan state.SignalMessageOnLdsChannels)
 			logger.Info("Channel has been added for", "uid", ddr.Node.Id)
 		}
-		listeners, isOpen := <-state.LdsChannels[ddr.Node.Id]
-		if isOpen {
-			logger.Info("listeners", "l", listeners)
-			err = server.Send(CreateListenerDeltaDiscoveryResponse(listeners))
+		ldsMessage, isOpen := <-state.LdsChannels[ddr.Node.Id]
+		if !isOpen {
+			//TODO Close connection from serverside
+			logger.Info("gRPC connection should have ended here")
+		}
+		switch ldsMessage.Verb {
+
+		case state.Add:
+			listeners := ldsMessage.Resources
+			//logger.Info("listeners", "l", listeners)
+			err = server.Send(createListenerDeltaDiscoveryResponse(listeners, nil))
 			if err != nil {
-				logger.Error(err, "Error occurred while sending cluster configuration to envoy")
+				logger.Error(err, "Error occurred while SENDING listener configuration to envoy")
 				return err
 			}
-		} else {
-			//TODO End connection from server somehow
-			logger.Info("gRPC connection should have ended here")
+
+		case state.Delete:
+			listenersToBeDeleted := make([]string, 0)
+			for _, l := range ldsMessage.Resources {
+				listenersToBeDeleted = append(listenersToBeDeleted, l.Name)
+			}
+			err = server.Send(createListenerDeltaDiscoveryResponse(nil, listenersToBeDeleted))
+			if err != nil {
+				logger.Error(err, "Error occurred while REMOVING listener configuration to envoy")
+				return err
+			}
+
+		case state.Change:
+			panic("change not implemented")
+			//TODO implement
 		}
 	}
 }
 
-func CreateListenerDeltaDiscoveryResponse(listeners []*listener.Listener) *envoyservicediscoveryv3.DeltaDiscoveryResponse {
+func createListenerDeltaDiscoveryResponse(listenersToBeAdded []*listener.Listener, listenersToBeDeleted []string) *envoyservicediscoveryv3.DeltaDiscoveryResponse {
 	var resources []*envoyservicediscoveryv3.Resource
-	for _, l := range listeners {
+	for _, l := range listenersToBeAdded {
 		r := &envoyservicediscoveryv3.Resource{
 			Name:     l.Name,
 			Version:  "1",
@@ -85,7 +104,7 @@ func CreateListenerDeltaDiscoveryResponse(listeners []*listener.Listener) *envoy
 		SystemVersionInfo: "Testversion",
 		Resources:         resources,
 		TypeUrl:           "type.googleapis.com/envoy.config.listener.v3.Listener",
-		RemovedResources:  nil,
+		RemovedResources:  listenersToBeDeleted,
 		Nonce:             "listener",
 	}
 

@@ -7,6 +7,7 @@ import (
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sort"
 )
 
 type Verb int
@@ -29,7 +30,7 @@ type SignalMessageOnCdsChannels struct {
 // KubernetesCluster State of the k8s cluster
 type KubernetesCluster struct {
 	Pods  []corev1.Pod
-	Vsvcs []l7mpiov1.VirtualServiceSpec
+	Vsvcs []string
 }
 
 var (
@@ -69,4 +70,9 @@ func (s *KubernetesCluster) GetUidListByLabel(m map[string]string) ([]string, er
 		return stringList, errors.New("there is no pod with the given label")
 	}
 	return stringList, nil
+}
+
+func (s *KubernetesCluster) RemoveStringElementFromSlice(element string) {
+	i := sort.StringSlice(s.Vsvcs).Search(element)
+	s.Vsvcs = append(s.Vsvcs[:i], s.Vsvcs[i+1:]...)
 }

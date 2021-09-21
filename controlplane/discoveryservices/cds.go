@@ -49,27 +49,46 @@ func (c clusterDiscoveryService) DeltaClusters(server clusterservice.ClusterDisc
 		}
 		logger.Info("Request:", "Node-id: ", ddr.Node.Id)
 		if _, ok := state.CdsChannels[ddr.Node.Id]; !ok {
-			state.CdsChannels[ddr.Node.Id] = make(chan []*cluster.Cluster)
+			state.CdsChannels[ddr.Node.Id] = make(chan state.SignalMessageOnCdsChannels)
 			logger.Info("Channel has been added for", "uid", ddr.Node.Id)
 		}
-		clusters, isOpen := <-state.CdsChannels[ddr.Node.Id]
-		if isOpen {
-			logger.Info("clusters", "c", clusters)
-			err = server.Send(CreateClusterDeltaDiscoveryResponse(clusters))
+		cdsMessage, isOpen := <-state.CdsChannels[ddr.Node.Id]
+		if !isOpen {
+			//TODO Close connection from serverside
+			logger.Info("gRPC connection should have ended here")
+		}
+		switch cdsMessage.Verb {
+
+		case state.Add:
+			clusters := cdsMessage.Resources
+			//logger.Info("clusters", "c", clusters)
+			err = server.Send(createClusterDeltaDiscoveryResponse(clusters, nil))
 			if err != nil {
 				logger.Error(err, "Error occurred while sending cluster configuration to envoy")
 				return err
 			}
-		} else {
-			//TODO End connection from server somehow
-			logger.Info("gRPC connection should have ended here")
+
+		case state.Delete:
+			clustersToBeDeleted := make([]string, 0)
+			for _, c := range cdsMessage.Resources {
+				clustersToBeDeleted = append(clustersToBeDeleted, c.Name)
+			}
+			err = server.Send(createClusterDeltaDiscoveryResponse(nil, clustersToBeDeleted))
+			if err != nil {
+				logger.Error(err, "Error occurred while REMOVING cluster configuration to envoy")
+				return err
+			}
+
+		case state.Change:
+			panic("change not implemented")
+			//TODO implement
 		}
 	}
 }
 
-func CreateClusterDeltaDiscoveryResponse(clusters []*cluster.Cluster) *envoyservicediscoveryv3.DeltaDiscoveryResponse {
+func createClusterDeltaDiscoveryResponse(clustersToBeAdded []*cluster.Cluster, clustersToBeDeleted []string) *envoyservicediscoveryv3.DeltaDiscoveryResponse {
 	var resources []*envoyservicediscoveryv3.Resource
-	for _, c := range clusters {
+	for _, c := range clustersToBeAdded {
 		r := &envoyservicediscoveryv3.Resource{
 			Name:     c.Name,
 			Version:  "1",
@@ -82,7 +101,7 @@ func CreateClusterDeltaDiscoveryResponse(clusters []*cluster.Cluster) *envoyserv
 		SystemVersionInfo: "Testversion",
 		Resources:         resources,
 		TypeUrl:           "type.googleapis.com/envoy.config.cluster.v3.Cluster",
-		RemovedResources:  nil,
+		RemovedResources:  clustersToBeDeleted,
 		Nonce:             "cluster",
 	}
 
