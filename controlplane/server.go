@@ -99,7 +99,7 @@ func VirtualServiceSpecHandler() {
 				Verb:      0,
 				Resources: ds.CreateEnvoyClusterConfigFromVsvcSpec(spec),
 			}
-			logger.Info("received", "spec:", spec)
+			logger.Info("received spec with", "# of listeners:", len(spec.Listeners))
 		}
 
 	}

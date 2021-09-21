@@ -73,8 +73,8 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 				state.ClusterState.Pods = remove(state.ClusterState.Pods, i)
 				close(state.LdsChannels[string(pod.UID)])
 				close(state.CdsChannels[string(pod.UID)])
-				logger.Info("Removed pod from Pods", "uid", pod.UID)
-				logger.Info("Channels closed", "uid", pod.UID)
+				//logger.Info("Removed pod from Pods", "uid", pod.UID)
+				//logger.Info("Channels closed", "uid", pod.UID)
 				return ctrl.Result{}, nil
 			}
 		}
@@ -88,12 +88,12 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 				for i, p := range state.ClusterState.Pods {
 					if p.UID == pod.UID {
 						state.ClusterState.Pods[i] = pod
-						logger.Info("pod changed in Pods:", "name: ", pod.Name, "pod.uid: ", pod.UID)
+						//logger.Info("pod changed in Pods:", "name: ", pod.Name, "pod.uid: ", pod.UID)
 						return ctrl.Result{}, nil
 					}
 				}
 				state.ClusterState.Pods = append(state.ClusterState.Pods, pod)
-				logger.Info("pod added to Pods:", "name: ", pod.Name, " pod.uid: ", pod.UID)
+				//logger.Info("pod added to Pods:", "name: ", pod.Name, " pod.uid: ", pod.UID)
 			}
 		}
 	}
