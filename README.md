@@ -79,6 +79,7 @@ listeners:
 - `Name` is the name of the cluster. UNIQUE
 - `service_discovery` `strictdns` only for now. To support scalability `EDS` is in progress
 - `healt_check` if you want to health check the endpoints please set this field like above.
+Important to not set accidentally this field if you don't want to otherwise the endpoint will be considered as unhealthy. 
 - `hash_key` if there are multiple worker pods that may handle your streams please set this field.
 Best practice is to set it to a unique ID like a call ID if there's one but the string does not really matter.
 - `endpoints` is a list of upstream hosts or endpoints. 
@@ -87,3 +88,59 @@ Best practice is to set it to a unique ID like a call ID if there's one but the 
 - `health_check_port` is the port on the upstream host where the TCP connection of the health checking process should be accepted
 
 
+#### Example
+
+```
+apiVersion: servicemesh.l7mp.io/v1
+kind: VirtualService
+metadata:
+  name: virtualservice-sample-ingress
+spec:
+  selector:
+    app: envoy-ingress
+  listeners:
+    - name: ingress-rtp-callid1-l
+      udp:
+        port: 2000
+        cluster:
+          name: ingress-rtp-callid1-c
+          service_discovery: strictdns
+          health_check:
+            interval: 500
+            protocol: TCP
+          hash_key: callid
+          endpoints:
+            - name: endpoint-name
+              host:
+                selector:
+                  app: worker
+              port: 2001
+              health_check_port: 1233
+```
+This config will apply to the ingress envoy client. Listener will listen on every address' port 2000
+and forward to a pod with the following label `app: worker`.
+The worker pod is configured like this:
+```
+apiVersion: servicemesh.l7mp.io/v1
+kind: VirtualService
+metadata:
+  name: virtualservice-sample-worker
+spec:
+  selector:
+    app: worker
+  listeners:
+    - name: worker-rtp-callid1-l
+      udp:
+        port: 2001
+        cluster:
+          name: worker-rtp-callid1-c
+          service_discovery: strictdns
+          hash_key: callid
+          endpoints:
+            - name: endpoint-name
+              host:
+                address: 127.0.0.1
+              port: 1234
+```
+It's listening on `0.0.0.0:2001` and forwards data to `127.0.0.1:1234`. 
+Where ideally is a piece of software in a container that actually does something with the received data.
