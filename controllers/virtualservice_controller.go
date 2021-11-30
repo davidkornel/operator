@@ -66,7 +66,6 @@ func (r *VirtualServiceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		logger.Error(err, "unable to fetch VirtualService")
 		return ctrl.Result{}, err
 	}
-	isVsvcMarkedToBeDeleted := virtualservice.GetDeletionTimestamp() != nil
 
 	//When a vsvc CR being deleted first it's going to get a Finalizer after that
 	//it's going to be deleted. In total the deletion process will make two changes
@@ -74,7 +73,7 @@ func (r *VirtualServiceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	//loop two times. First when it just got a finalizer but not the 'deletionTimestamp'
 	//we should ignore the changes.
 	if controllerutil.ContainsFinalizer(virtualservice, vsvcFinalizer) {
-		if !isVsvcMarkedToBeDeleted {
+		if virtualservice.GetDeletionTimestamp() == nil {
 			return ctrl.Result{}, nil
 		} else {
 			//logger.Info("DELETE RESOURCE ", "vsvc", virtualservice.Name)
@@ -86,25 +85,30 @@ func (r *VirtualServiceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 					}
 					state.CdsChannels[uid] <- state.SignalMessageOnCdsChannels{
 						Verb:      1, //Delete
-						Resources: ds.CreateEnvoyClusterConfigFromVsvcSpec(virtualservice.Spec),
+						Resources: ds.CreateEnvoyClusterConfigFromVsvcSpec(virtualservice.Spec, uid),
 					}
 				}
-				state.ClusterState.RemoveStringElementFromSlice(virtualservice.Name)
-				controllerutil.RemoveFinalizer(virtualservice, vsvcFinalizer)
-				err = r.Update(ctx, virtualservice)
-				if err != nil {
-					return ctrl.Result{}, err
-				}
-				return ctrl.Result{}, nil
 			} else {
+				logger.Error(err, "NOT FATAL")
+				return ctrl.Result{}, nil
+			}
+			logger.Info("Removing vsvc", "vsvc", virtualservice.Name)
+			err := state.ClusterState.RemoveElementFromSlice(*virtualservice)
+			if err != nil {
 				return ctrl.Result{}, err
 			}
+			controllerutil.RemoveFinalizer(virtualservice, vsvcFinalizer)
+			err = r.Update(ctx, virtualservice)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
 		}
 	}
 	//Storing names to know which vsvc are already processed
 	//If the rtpe-controller adds the finalizer to the CR, reconcile loop will run again,
 	//but this time we don't want to try to create a config out of it, because it's already done
-	state.ClusterState.Vsvcs = append(state.ClusterState.Vsvcs, virtualservice.Name)
+	state.ClusterState.Vsvcs = append(state.ClusterState.Vsvcs, *virtualservice)
 	logger.Info("New virtualservice: ", "virtualservice", virtualservice.Name)
 
 	state.VsvcChannel <- virtualservice.Spec
