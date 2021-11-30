@@ -2,15 +2,17 @@ package discoveryservices
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	l7mpiov1 "github.com/davidkornel/operator/api/v1"
 	"github.com/davidkornel/operator/state"
 	pb "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
+	endpointv3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	clusterservice "github.com/envoyproxy/go-control-plane/envoy/service/cluster/v3"
 	envoyservicediscoveryv3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	"github.com/go-logr/logr"
 	"github.com/golang/protobuf/ptypes/any"
 	_struct "github.com/golang/protobuf/ptypes/struct"
 	"github.com/golang/protobuf/ptypes/wrappers"
@@ -18,7 +20,8 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 	"io"
-	types2 "k8s.io/apimachinery/pkg/types"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"time"
 )
@@ -27,17 +30,26 @@ type clusterDiscoveryService struct {
 	pb.UnimplementedClusterDiscoveryServiceServer
 }
 
-func (c clusterDiscoveryService) StreamClusters(server clusterservice.ClusterDiscoveryService_StreamClustersServer) error {
+func NewCdsServer() *clusterDiscoveryService {
+	s := &clusterDiscoveryService{
+		UnimplementedClusterDiscoveryServiceServer: pb.UnimplementedClusterDiscoveryServiceServer{},
+	}
+	logger := ctrl.Log.WithName("CDS server")
+	logger.Info("init")
+	return s
+}
+
+func (c clusterDiscoveryService) StreamClusters(_ clusterservice.ClusterDiscoveryService_StreamClustersServer) error {
 	panic("implement me")
 }
 
-func (c clusterDiscoveryService) FetchClusters(ctx context.Context, request *envoyservicediscoveryv3.DiscoveryRequest) (*envoyservicediscoveryv3.DiscoveryResponse, error) {
+func (c clusterDiscoveryService) FetchClusters(_ context.Context, _ *envoyservicediscoveryv3.DiscoveryRequest) (*envoyservicediscoveryv3.DiscoveryResponse, error) {
 	panic("implement me")
 }
 
 func (c clusterDiscoveryService) DeltaClusters(server clusterservice.ClusterDiscoveryService_DeltaClustersServer) error {
 	logger := ctrl.Log.WithName("CDS")
-	logger.Info("CDS INIT")
+	initialized := false
 	for {
 		//ddr delta discovery request
 		ddr, err := server.Recv()
@@ -50,12 +62,29 @@ func (c clusterDiscoveryService) DeltaClusters(server clusterservice.ClusterDisc
 		logger.Info("Request:", "Node-id: ", ddr.Node.Id)
 		if _, ok := state.CdsChannels[ddr.Node.Id]; !ok {
 			state.CdsChannels[ddr.Node.Id] = make(chan state.SignalMessageOnCdsChannels)
-			logger.Info("Channel has been added for", "uid", ddr.Node.Id)
+			//logger.Info("Channel has been added for", "uid", ddr.Node.Id)
+		}
+		if !initialized {
+			deltaDiscoveryResponse, initMsg := initCDSConnection(logger, ddr.Node.Id)
+			if initMsg != nil {
+				logger.Info(*initMsg)
+				initialized = true
+			} else {
+				sendErr := server.Send(deltaDiscoveryResponse)
+				if sendErr != nil {
+					logger.Error(sendErr, "Error occurred while SENDING cluster configuration to envoy")
+					return sendErr
+				} else {
+					logger.Info("Initialization was successful for", "node", ddr.Node.Id)
+					initialized = true
+				}
+			}
 		}
 		cdsMessage, isOpen := <-state.CdsChannels[ddr.Node.Id]
 		if !isOpen {
 			//TODO Close connection from serverside
 			logger.Info("gRPC connection should have ended here")
+			break
 		}
 		switch cdsMessage.Verb {
 
@@ -63,8 +92,9 @@ func (c clusterDiscoveryService) DeltaClusters(server clusterservice.ClusterDisc
 			clusters := cdsMessage.Resources
 			//logger.Info("clusters", "c", clusters)
 			err = server.Send(createClusterDeltaDiscoveryResponse(clusters, nil))
+			logger.Info("Clusters to be added", "num", len(clusters))
 			if err != nil {
-				logger.Error(err, "Error occurred while sending cluster configuration to envoy")
+				logger.Error(err, "Error occurred while SENDING cluster configuration to envoy")
 				return err
 			}
 
@@ -73,15 +103,70 @@ func (c clusterDiscoveryService) DeltaClusters(server clusterservice.ClusterDisc
 			for _, c := range cdsMessage.Resources {
 				clustersToBeDeleted = append(clustersToBeDeleted, c.Name)
 			}
+			logger.Info("Clusters to be removed", "clusters", clustersToBeDeleted)
 			err = server.Send(createClusterDeltaDiscoveryResponse(nil, clustersToBeDeleted))
 			if err != nil {
-				logger.Error(err, "Error occurred while REMOVING cluster configuration to envoy")
+				logger.Error(err, "Error occurred while REMOVING cluster configuration from envoy")
 				return err
 			}
 
 		case state.Change:
 			panic("change not implemented")
 			//TODO implement
+		}
+	}
+	return nil
+}
+
+func contains(logger logr.Logger, e types.UID) *v1.Pod {
+	for _, a := range state.ClusterState.Pods {
+		//logger.Info("contains", "got uid", string(e), "pods uid", string(a.UID), "podname", a.Name)
+		if a.UID == e {
+			logger.Info("contains MATCH", "pod", a.Name)
+			return &a
+		}
+	}
+	return nil
+}
+
+func initCDSConnection(logger logr.Logger, uid string) (*envoyservicediscoveryv3.DeltaDiscoveryResponse, *string) {
+	podName := ""
+	var clusters []*cluster.Cluster
+	deadline := time.Now().Add(20 * time.Second)
+	UID := types.UID(uid)
+	logger.Info("initCDS", "uid", uid)
+	for {
+		if p := contains(logger, UID); p != nil {
+			podName = p.Name
+			for k, v := range p.Labels {
+				for i, vsvc := range state.ClusterState.Vsvcs {
+					logger.Info("cluster vsvc selector", "vsvc name", vsvc.Name, "vsvc selector", vsvc.Spec.Selector[k], "", v)
+					logger.Info("cluster vsvc selector", "vsvc", vsvc)
+					if vsvc.Spec.Selector[k] == v {
+						logger.Info("MATCH")
+						clusters = append(clusters, CreateEnvoyClusterConfigFromVsvcSpec(vsvc.Spec, uid)...)
+					}
+					if i+1 == len(state.ClusterState.Vsvcs) {
+						if len(clusters) > 0 {
+							return createClusterDeltaDiscoveryResponse(clusters, nil), nil
+						} else {
+							msg := "There is no POD in the kubernetes cluster that matches the label selector for this pod " + podName
+							//TODO handle return better
+							return nil, &msg
+						}
+					}
+				}
+				msg := "There is no VSVC in the kubernetes cluster that should be applied for this pod " + podName
+				//TODO handle return better
+				return nil, &msg
+			}
+		} else {
+			time.Sleep(500 * time.Millisecond)
+		}
+		if time.Now().After(deadline) {
+			msg := "Pod not appeared to be ready for 20 seconds"
+			logger.Error(errors.New("deadline passed"), msg)
+			return nil, &msg
 		}
 	}
 }
@@ -113,16 +198,7 @@ func ConvertClustersToAny(c *cluster.Cluster) *any.Any {
 	return clusterAny
 }
 
-func NewCdsServer() *clusterDiscoveryService {
-	s := &clusterDiscoveryService{
-		UnimplementedClusterDiscoveryServiceServer: pb.UnimplementedClusterDiscoveryServiceServer{},
-	}
-	logger := ctrl.Log.WithName("CDS server")
-	logger.Info("init")
-	return s
-}
-
-func CreateEnvoyClusterConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec) []*cluster.Cluster {
+func CreateEnvoyClusterConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec, uid string) []*cluster.Cluster {
 	var clusters []*cluster.Cluster
 	for _, l := range spec.Listeners {
 
@@ -140,7 +216,7 @@ func CreateEnvoyClusterConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec) []*c
 			if l.Udp.Cluster.HealthCheck.Protocol == "TCP" {
 				c.HealthChecks = []*core.HealthCheck{{
 					Timeout:            durationpb.New(100 * time.Millisecond),
-					Interval:           durationpb.New(100 * time.Millisecond),
+					Interval:           durationpb.New(time.Duration(l.Udp.Cluster.HealthCheck.Interval) * time.Millisecond),
 					UnhealthyThreshold: &wrappers.UInt32Value{Value: 1},
 					HealthyThreshold:   &wrappers.UInt32Value{Value: 1},
 					HealthChecker: &core.HealthCheck_TcpHealthCheck_{
@@ -157,7 +233,7 @@ func CreateEnvoyClusterConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec) []*c
 							}},
 						},
 					},
-					NoTrafficInterval: durationpb.New(1 * time.Second),
+					NoTrafficInterval: durationpb.New(time.Duration(l.Udp.Cluster.HealthCheck.Interval) * time.Millisecond),
 				}}
 			}
 		}
@@ -167,7 +243,8 @@ func CreateEnvoyClusterConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec) []*c
 			createStrictDnsConfig(c, l)
 		case "eds":
 			//TODO handle eds
-			createEdsConfig(c)
+			e := l.Udp.Cluster.Endpoints[0]
+			createEdsConfig(c, e, uid)
 		}
 
 		clusters = append(clusters, c)
@@ -175,7 +252,16 @@ func CreateEnvoyClusterConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec) []*c
 	return clusters
 }
 
-func createEdsConfig(c *cluster.Cluster) {
+func createEdsConfig(c *cluster.Cluster, endpoint l7mpiov1.Endpoint, uid string) {
+	if _, ok := state.ConnectedEdsClients[c.Name]; !ok {
+		state.ConnectedEdsClients[c.Name] = &state.EdsClient{
+			Endpoint:    endpoint,
+			Channel:     make(chan state.SignalMessageOnEdsChannels),
+			UID:         uid,
+			PodSelector: *endpoint.Host.Selector,
+		}
+	}
+
 	c.ClusterDiscoveryType = &cluster.Cluster_Type{
 		Type: cluster.Cluster_EDS,
 	}
@@ -192,7 +278,7 @@ func createEdsConfig(c *cluster.Cluster) {
 							},
 						},
 					}},
-					SetNodeOnFirstMessageOnly: false,
+					SetNodeOnFirstMessageOnly: true,
 				},
 			},
 			InitialFetchTimeout: durationpb.New(600 * time.Second),
@@ -205,20 +291,20 @@ func createStrictDnsConfig(c *cluster.Cluster, l l7mpiov1.Listener) {
 	c.ClusterDiscoveryType = &cluster.Cluster_Type{
 		Type: cluster.Cluster_STRICT_DNS,
 	}
-	c.LoadAssignment = createEndpoint(l.Udp.Cluster)
+	c.LoadAssignment = createStrictDnsEndpoints(l.Udp.Cluster)
 }
 
-func createEndpoint(c l7mpiov1.Cluster) *endpoint.ClusterLoadAssignment {
+func createStrictDnsEndpoints(c l7mpiov1.Cluster) *endpointv3.ClusterLoadAssignment {
 
-	loadAssignment := &endpoint.ClusterLoadAssignment{
+	loadAssignment := &endpointv3.ClusterLoadAssignment{
 		ClusterName: c.Name,
 	}
-	lbEndpoints := make([]*endpoint.LbEndpoint, len(c.Endpoints))
+	lbEndpoints := make([]*endpointv3.LbEndpoint, 0)
 	for _, e := range c.Endpoints {
 		for _, a := range fillAddress(e.Host) {
-			newEndpoint := &endpoint.LbEndpoint{
-				HostIdentifier: &endpoint.LbEndpoint_Endpoint{
-					Endpoint: &endpoint.Endpoint{
+			newEndpoint := &endpointv3.LbEndpoint{
+				HostIdentifier: &endpointv3.LbEndpoint_Endpoint{
+					Endpoint: &endpointv3.Endpoint{
 						Address: &core.Address{
 							Address: &core.Address_SocketAddress{
 								SocketAddress: &core.SocketAddress{
@@ -233,19 +319,19 @@ func createEndpoint(c l7mpiov1.Cluster) *endpoint.ClusterLoadAssignment {
 						HealthCheckConfig: createEndpointHealthCheckConfig(e),
 					},
 				},
-				Metadata: &core.Metadata{FilterMetadata: createStruct(a)},
+				Metadata: &core.Metadata{FilterMetadata: createLoadBalancerStruct(a)},
 			}
 			lbEndpoints = append(lbEndpoints, newEndpoint)
 		}
 	}
-	localityLbEndpoints := []*endpoint.LocalityLbEndpoints{{LbEndpoints: lbEndpoints}}
+	localityLbEndpoints := []*endpointv3.LocalityLbEndpoints{{LbEndpoints: lbEndpoints}}
 	loadAssignment.Endpoints = localityLbEndpoints
 	return loadAssignment
 }
 
-func createEndpointHealthCheckConfig(e l7mpiov1.Endpoint) *endpoint.Endpoint_HealthCheckConfig {
+func createEndpointHealthCheckConfig(e l7mpiov1.Endpoint) *endpointv3.Endpoint_HealthCheckConfig {
 	if e.HealthCheckPort != nil {
-		hc := &endpoint.Endpoint_HealthCheckConfig{
+		hc := &endpointv3.Endpoint_HealthCheckConfig{
 			PortValue: *e.HealthCheckPort,
 		}
 		return hc
@@ -253,7 +339,7 @@ func createEndpointHealthCheckConfig(e l7mpiov1.Endpoint) *endpoint.Endpoint_Hea
 	return nil
 }
 
-func createStruct(value string) map[string]*structpb.Struct {
+func createLoadBalancerStruct(value string) map[string]*structpb.Struct {
 	m, err := structpb.NewStruct(map[string]interface{}{
 		"hash_key": fmt.Sprintf("%s", value),
 	})
@@ -275,7 +361,7 @@ func fillAddress(host l7mpiov1.Host) []string {
 			ctrl.Log.WithName("Fill address").Error(err, "")
 		}
 		for _, uid := range uids {
-			address, e := state.ClusterState.GetAddressByUid(types2.UID(uid))
+			address, e := state.ClusterState.GetAddressByUid(types.UID(uid))
 			if e != nil {
 				ctrl.Log.WithName("Fill address").Error(e, "")
 			}

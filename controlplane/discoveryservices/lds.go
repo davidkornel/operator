@@ -29,36 +29,54 @@ func NewLdsServer() *listenerDiscoveryService {
 	return s
 }
 
-func (s *listenerDiscoveryService) StreamListeners(server listenerservice.ListenerDiscoveryService_StreamListenersServer) error {
+func (s *listenerDiscoveryService) StreamListeners(_ listenerservice.ListenerDiscoveryService_StreamListenersServer) error {
 	panic("implement me")
 }
 
-func (s *listenerDiscoveryService) FetchListeners(ctx context.Context, request *envoyservicediscoveryv3.DiscoveryRequest) (*envoyservicediscoveryv3.DiscoveryResponse, error) {
+func (s *listenerDiscoveryService) FetchListeners(_ context.Context, _ *envoyservicediscoveryv3.DiscoveryRequest) (*envoyservicediscoveryv3.DiscoveryResponse, error) {
 	panic("implement me")
 }
 
 func (s *listenerDiscoveryService) DeltaListeners(server listenerservice.ListenerDiscoveryService_DeltaListenersServer) error {
 	logger := ctrl.Log.WithName("LDS")
-	logger.Info("LDS INIT")
-	server.Context()
+	initialized := false
 	for {
 		//ddr delta discovery request
 		ddr, err := server.Recv()
 		if err == io.EOF {
+			logger.Info("EOF")
 			return nil
 		}
 		if err != nil {
+			logger.Error(err, "ERROR")
 			return err
 		}
-		logger.Info("Request:", "Node-id: ", ddr.Node.Id)
+		logger.Info("Request:", "node id: ", ddr.Node.Id)
 		if _, ok := state.LdsChannels[ddr.Node.Id]; !ok {
 			state.LdsChannels[ddr.Node.Id] = make(chan state.SignalMessageOnLdsChannels)
-			logger.Info("Channel has been added for", "uid", ddr.Node.Id)
+			//logger.Info("Channel has been added for", "uid", ddr.Node.Id)
+		}
+		if !initialized {
+			deltaDiscoveryResponse, initMsg := initLDSConnection(ddr.Node.Id)
+			if initMsg != nil {
+				logger.Info(*initMsg)
+				initialized = true
+			} else {
+				sendErr := server.Send(deltaDiscoveryResponse)
+				if sendErr != nil {
+					logger.Error(sendErr, "Error occurred while SENDING listener configuration to envoy")
+					return sendErr
+				} else {
+					logger.Info("Initialization was successful for", "node", ddr.Node.Id)
+					initialized = true
+				}
+			}
 		}
 		ldsMessage, isOpen := <-state.LdsChannels[ddr.Node.Id]
 		if !isOpen {
 			//TODO Close connection from serverside
 			logger.Info("gRPC connection should have ended here")
+			break
 		}
 		switch ldsMessage.Verb {
 
@@ -87,6 +105,26 @@ func (s *listenerDiscoveryService) DeltaListeners(server listenerservice.Listene
 			//TODO implement
 		}
 	}
+	return nil
+}
+
+func initLDSConnection(uid string) (*envoyservicediscoveryv3.DeltaDiscoveryResponse, *string) {
+	podName := ""
+	for _, p := range state.ClusterState.Pods {
+		if string(p.UID) == uid {
+			podName = p.Name
+			for k, v := range p.Labels {
+				for _, vsvc := range state.ClusterState.Vsvcs {
+					if vsvc.Spec.Selector[k] == v {
+						listeners := CreateEnvoyListenerConfigFromVsvcSpec(vsvc.Spec)
+						return createListenerDeltaDiscoveryResponse(listeners, nil), nil
+					}
+				}
+			}
+		}
+	}
+	msg := "There is no VSVC in the kubernetes cluster that should be applied for this pod " + podName
+	return nil, &msg
 }
 
 func createListenerDeltaDiscoveryResponse(listenersToBeAdded []*listener.Listener, listenersToBeDeleted []string) *envoyservicediscoveryv3.DeltaDiscoveryResponse {
@@ -118,7 +156,7 @@ func ConvertListenersToAny(l *listener.Listener) *any.Any {
 
 func CreateEnvoyListenerConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec) []*listener.Listener {
 	var listeners []*listener.Listener
-	// TODO handle tcp listener aswell
+	// TODO handle tcp listener as well
 	for _, l := range spec.Listeners {
 		udpFilter := &udp.UdpProxyConfig{
 			StatPrefix: l.Name,
@@ -133,7 +171,6 @@ func CreateEnvoyListenerConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec) []*
 			},
 		}
 
-		//pbst, err := ptypes.MarshalAny(udpFilter)
 		pbst, err := anypb.New(udpFilter)
 		if err != nil {
 			panic(err)
