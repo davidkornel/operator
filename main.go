@@ -36,7 +36,6 @@ import (
 	"github.com/davidkornel/operator/controllers"
 
 	servicemeshv1 "github.com/davidkornel/operator/api/v1"
-	//"github.com/davidkornel/operator/state"
 	"github.com/davidkornel/operator/controlplane"
 	//+kubebuilder:scaffold:imports
 )

@@ -7,7 +7,11 @@ import (
 	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 )
 
 type Verb int
@@ -43,12 +47,15 @@ type SignalMessageOnPodChannel struct {
 
 // KubernetesCluster State of the k8s cluster
 type KubernetesCluster struct {
-	Pods  []corev1.Pod
-	Vsvcs []l7mpiov1.VirtualService
+	Pods           []corev1.Pod
+	Vsvcs          []l7mpiov1.VirtualService
+	Config         *rest.Config
+	ClientSet      *kubernetes.Clientset
+	VsvcRestClient *rest.RESTClient
 }
 
 var (
-	ClusterState = KubernetesCluster{}
+	ClusterState = NewKubernetesCluster()
 	VsvcChannel  = make(chan l7mpiov1.VirtualServiceSpec)
 	PodChannel   = make(chan SignalMessageOnPodChannel)
 	// LdsChannels Keys are the 'node.id's from the connected envoy instance
@@ -67,6 +74,35 @@ var (
 	//Used for signaling to the gRPC server that there is config available for configuration
 	ConnectedEdsClients = make(map[string]*EdsClient)
 )
+
+func NewKubernetesCluster() KubernetesCluster {
+	// creates the in-cluster config
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		panic(err.Error())
+	}
+	crdConfig := *config
+	crdConfig.ContentConfig.GroupVersion = &l7mpiov1.GroupVersion
+	crdConfig.APIPath = "/apis"
+	crdConfig.NegotiatedSerializer = serializer.NewCodecFactory(scheme.Scheme)
+	crdConfig.UserAgent = rest.DefaultKubernetesUserAgent()
+	vsvcRestClient, err := rest.UnversionedRESTClientFor(&crdConfig)
+	if err != nil {
+		panic(err)
+	}
+	// creates the ClientSet
+	clientSet, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		panic(err.Error())
+	}
+	return KubernetesCluster{
+		Pods:           []corev1.Pod{},
+		Vsvcs:          []l7mpiov1.VirtualService{},
+		Config:         config,
+		ClientSet:      clientSet,
+		VsvcRestClient: vsvcRestClient,
+	}
+}
 
 func (s *KubernetesCluster) GetAddressByUid(uid types.UID) (string, error) {
 	for _, p := range s.Pods {

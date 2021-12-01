@@ -138,10 +138,17 @@ func initCDSConnection(logger logr.Logger, uid string) (*envoyservicediscoveryv3
 	for {
 		if p := contains(logger, UID); p != nil {
 			podName = p.Name
+			vsvcs := l7mpiov1.VirtualServiceList{}
+			err := state.ClusterState.VsvcRestClient.Get().Resource("virtualservices").Do(context.TODO()).Into(&vsvcs)
+			if err != nil {
+				logger.Error(err, "Error while getting vsvc from the cluster")
+			} else {
+				logger.Info("Successfully got the list of VirtualServices", "number of vsvcs", len(vsvcs.Items))
+			}
 			for k, v := range p.Labels {
-				for i, vsvc := range state.ClusterState.Vsvcs {
+				for i, vsvc := range vsvcs.Items {
 					logger.Info("cluster vsvc selector", "vsvc name", vsvc.Name, "vsvc selector", vsvc.Spec.Selector[k], "", v)
-					logger.Info("cluster vsvc selector", "vsvc", vsvc)
+					logger.Info("cluster", "vsvc", vsvc, "vsvc.spec", vsvc.Spec)
 					if vsvc.Spec.Selector[k] == v {
 						logger.Info("MATCH")
 						clusters = append(clusters, CreateEnvoyClusterConfigFromVsvcSpec(vsvc.Spec, uid)...)
