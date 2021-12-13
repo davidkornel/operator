@@ -25,12 +25,10 @@ import (
 
 	//metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	l7mpiov1 "github.com/davidkornel/operator/api/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	l7mpiov1 "github.com/davidkornel/operator/api/v1"
 )
 
 // VirtualServiceReconciler reconciles a VirtualService object
@@ -55,7 +53,7 @@ const vsvcFinalizer = "l7mp.io/delete"
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.9.2/pkg/reconcile
 func (r *VirtualServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+	logger := ctrl.Log.WithName("VSVC_CON")
 
 	virtualservice := &l7mpiov1.VirtualService{}
 	if err := r.Get(ctx, req.NamespacedName, virtualservice); err != nil {
