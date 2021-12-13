@@ -74,8 +74,7 @@ func (s *listenerDiscoveryService) DeltaListeners(server listenerservice.Listene
 		}
 		ldsMessage, isOpen := <-state.LdsChannels[ddr.Node.Id]
 		if !isOpen {
-			//TODO Close connection from serverside
-			logger.Info("gRPC connection should have ended here")
+			logger.Info("Closing gRPC connection from server side")
 			break
 		}
 		switch ldsMessage.Verb {
