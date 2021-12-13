@@ -82,8 +82,7 @@ func (c clusterDiscoveryService) DeltaClusters(server clusterservice.ClusterDisc
 		}
 		cdsMessage, isOpen := <-state.CdsChannels[ddr.Node.Id]
 		if !isOpen {
-			//TODO Close connection from serverside
-			logger.Info("gRPC connection should have ended here")
+			logger.Info("Closing gRPC connection from server side")
 			break
 		}
 		switch cdsMessage.Verb {
@@ -141,32 +140,29 @@ func initCDSConnection(logger logr.Logger, uid string) (*envoyservicediscoveryv3
 			vsvcs := l7mpiov1.VirtualServiceList{}
 			err := state.ClusterState.VsvcRestClient.Get().Resource("virtualservices").Do(context.TODO()).Into(&vsvcs)
 			if err != nil {
-				logger.Error(err, "Error while getting vsvc from the cluster")
+				logger.Error(err, "Error while asking K8s API for a VSVC list")
 			} else {
-				logger.Info("Successfully got the list of VirtualServices", "number of vsvcs", len(vsvcs.Items))
+				logger.Info("Successfully got the list of VirtualServices from the K8s API", "number of vsvcs", len(vsvcs.Items))
 			}
-			for k, v := range p.Labels {
-				for i, vsvc := range vsvcs.Items {
-					logger.Info("cluster vsvc selector", "vsvc name", vsvc.Name, "vsvc selector", vsvc.Spec.Selector[k], "", v)
-					logger.Info("cluster", "vsvc", vsvc, "vsvc.spec", vsvc.Spec)
+			for i, vsvc := range vsvcs.Items {
+				for k, v := range p.Labels {
 					if vsvc.Spec.Selector[k] == v {
-						logger.Info("MATCH")
 						clusters = append(clusters, CreateEnvoyClusterConfigFromVsvcSpec(vsvc.Spec, uid)...)
 					}
-					if i+1 == len(state.ClusterState.Vsvcs) {
-						if len(clusters) > 0 {
-							return createClusterDeltaDiscoveryResponse(clusters, nil), nil
-						} else {
-							msg := "There is no POD in the kubernetes cluster that matches the label selector for this pod " + podName
-							//TODO handle return better
-							return nil, &msg
-						}
+				}
+				if i+1 == len(vsvcs.Items) {
+					if len(clusters) > 0 {
+						return createClusterDeltaDiscoveryResponse(clusters, nil), nil
+					} else {
+						msg := "There is no VSVC in the kubernetes cluster that matches any of labels of this pod " + podName
+						//TODO handle return better
+						return nil, &msg
 					}
 				}
-				msg := "There is no VSVC in the kubernetes cluster that should be applied for this pod " + podName
-				//TODO handle return better
-				return nil, &msg
 			}
+			msg := "There is no VSVC in the kubernetes cluster that should be applied for this pod " + podName
+			//TODO handle return better
+			return nil, &msg
 		} else {
 			time.Sleep(500 * time.Millisecond)
 		}
