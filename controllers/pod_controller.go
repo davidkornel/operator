@@ -58,7 +58,7 @@ type PodReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.9.2/pkg/reconcile
 func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := ctrl.Log.WithName("POD_C")
+	logger := ctrl.Log.WithName("POD_CON")
 	// your logic here
 	var pod corev1.Pod
 	if err := r.Get(ctx, req.NamespacedName, &pod); err != nil {
@@ -71,30 +71,26 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 	isPodMarkedToBeDeleted := pod.GetDeletionTimestamp() != nil
 	if isPodMarkedToBeDeleted {
-		//logger.Info("pod marked to be deleted")
-		//TODO this is a huge mess but works, reduce loops and 'if's
-		for _, a := range pod.Status.ContainerStatuses {
-			//TODO with graceperiod set to 0 or 1 container won't reach the terminated state
-			if a.Name == "envoy" /*&& a.State.Terminated != nil*/ {
-				for i, p := range state.ClusterState.Pods {
-					if p.UID == pod.UID {
-						state.ClusterState.Pods = remove(state.ClusterState.Pods, i)
-
-						delete(state.LdsChannels, string(pod.UID))
-						delete(state.LdsChannels, string(pod.UID))
-						go r.CloseChannels(logger, ctx, pod)
-						logger.Info("Removed pod from Pods", "pod", pod.Name, "uid", pod.UID)
-						logger.Info("Number of elements in Pods", "", len(state.ClusterState.Pods))
-						state.PodChannel <- state.SignalMessageOnPodChannel{
-							Verb: 1,
-							Pod:  &pod,
-						}
-						return ctrl.Result{}, nil
-					}
+		for _, p := range state.ClusterState.Pods {
+			if p.UID == pod.UID {
+				var ldsChan chan state.SignalMessageOnLdsChannels
+				var cdsChan chan state.SignalMessageOnCdsChannels
+				if _, ok := state.LdsChannels[string(pod.UID)]; ok {
+					ldsChan = state.LdsChannels[string(pod.UID)]
+					delete(state.LdsChannels, string(pod.UID))
 				}
+				if _, ok := state.CdsChannels[string(pod.UID)]; ok {
+					cdsChan = state.CdsChannels[string(pod.UID)]
+					delete(state.CdsChannels, string(pod.UID))
+				}
+				go r.CloseChannels(logger, ctx, pod, ldsChan, cdsChan)
+				state.PodChannel <- state.SignalMessageOnPodChannel{
+					Verb: 1,
+					Pod:  &pod,
+				}
+				return ctrl.Result{}, nil
 			}
 		}
-
 		return ctrl.Result{}, nil
 	}
 	for _, label := range labelValues {
@@ -122,7 +118,11 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, nil
 }
 
-func (r *PodReconciler) CloseChannels(logger logr.Logger, ctx context.Context, pod corev1.Pod) {
+func (r *PodReconciler) CloseChannels(logger logr.Logger,
+	ctx context.Context,
+	pod corev1.Pod,
+	ldsChan chan state.SignalMessageOnLdsChannels,
+	cdsChan chan state.SignalMessageOnCdsChannels) {
 	for {
 		p := corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{
@@ -130,12 +130,16 @@ func (r *PodReconciler) CloseChannels(logger logr.Logger, ctx context.Context, p
 			Name:      pod.Name,
 		}, &p); err != nil {
 			if apierrors.IsNotFound(err) {
-				logger.Info("Pod not found, closing its channels")
-				if _, ok := state.LdsChannels[string(pod.UID)]; ok {
-					close(state.LdsChannels[string(pod.UID)])
+				logger.Info("Pod fully removed from cluster, closing its ServiceDiscovery channels and from stored Pods")
+				//TODO this indexing tactic won't work in a case where multiple pods are being deleted
+				state.ClusterState.Pods = remove(state.ClusterState.Pods, pod.UID)
+				if ldsChan != nil {
+					logger.Info("closing lds channel")
+					close(ldsChan)
 				}
-				if _, ok := state.CdsChannels[string(pod.UID)]; ok {
-					close(state.CdsChannels[string(pod.UID)])
+				if cdsChan != nil {
+					logger.Info("closing cds channel")
+					close(cdsChan)
 				}
 				for _, e := range state.ConnectedEdsClients {
 					if e.UID == string(pod.UID) {
@@ -143,6 +147,7 @@ func (r *PodReconciler) CloseChannels(logger logr.Logger, ctx context.Context, p
 						logger.Info("Closing eds channel")
 					}
 				}
+				logger.Info("Successfully removed pod from Pods", "pod", pod.Name, "uid", pod.UID, "num of pods left", len(state.ClusterState.Pods))
 				return
 			}
 		}
@@ -157,7 +162,13 @@ func (r *PodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func remove(s []corev1.Pod, i int) []corev1.Pod {
-	s[i] = s[len(s)-1]
-	return s[:len(s)-1]
+func remove(pods []corev1.Pod, uid types.UID) []corev1.Pod {
+	for i, p := range pods {
+		if p.UID == uid {
+			pods[i] = pods[len(pods)-1]
+			return pods[:len(pods)-1]
+		}
+	}
+	ctrl.Log.WithName("POD_DEL").Info("Pod might have been removed previously, this should not happen")
+	return pods
 }
