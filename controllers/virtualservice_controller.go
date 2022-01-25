@@ -75,7 +75,7 @@ func (r *VirtualServiceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, nil
 		} else {
 			//logger.Info("DELETE RESOURCE ", "vsvc", virtualservice.Name)
-			if uids, err := state.ClusterState.GetUidListByLabel(logger, virtualservice.Spec.Selector, false); err == nil {
+			if uids, err := state.ClusterState.GetUidListByLabel(logger, virtualservice.Spec.Selector); err == nil {
 				for _, uid := range uids {
 					state.LdsChannels[uid] <- state.SignalMessageOnLdsChannels{
 						Verb:      1, //Delete

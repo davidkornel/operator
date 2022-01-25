@@ -371,7 +371,7 @@ func fillAddress(host l7mpiov1.Host) []string {
 		return addressList
 	}
 	if host.Selector != nil {
-		uids, err := state.ClusterState.GetUidListByLabel(logger, *host.Selector, false)
+		uids, err := state.ClusterState.GetUidListByLabel(logger, *host.Selector)
 		if err != nil {
 			logger.Error(err, "Getting UID list failed")
 		}

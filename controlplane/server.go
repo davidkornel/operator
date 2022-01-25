@@ -145,7 +145,7 @@ func VirtualServiceSpecHandler() {
 	logger := ctrl.Log.WithName("Vsvc spec handler")
 	for {
 		spec := <-state.VsvcChannel
-		uids, err := state.ClusterState.GetUidListByLabel(logger, spec.Selector, true)
+		uids, err := state.ClusterState.GetUidListByLabel(logger, spec.Selector)
 		if err != nil {
 			logger.Info("Non fatal error happened while trying to get uid by label selector")
 		} else {

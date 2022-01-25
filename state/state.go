@@ -117,7 +117,7 @@ func (s *KubernetesCluster) GetAddressByUid(uid types.UID) (string, error) {
 	return "", errors.New("there is no pod with the given uid")
 }
 
-func (s *KubernetesCluster) GetUidListByLabel(logger logr.Logger, m map[string]string, notTerminating bool) ([]string, error) {
+func (s *KubernetesCluster) GetUidListByLabel(logger logr.Logger, m map[string]string) ([]string, error) {
 	stringList := make([]string, 0)
 	podsFromK8sApi, err := GetPodList(logger, nil)
 	if err != nil {
@@ -125,7 +125,7 @@ func (s *KubernetesCluster) GetUidListByLabel(logger logr.Logger, m map[string]s
 	}
 	for k, v := range m {
 		for _, p := range podsFromK8sApi.Items {
-			if p.Labels[k] == v {
+			if p.Labels[k] == v && p.GetDeletionTimestamp() == nil {
 				stringList = append(stringList, string(p.UID))
 			}
 		}
