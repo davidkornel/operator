@@ -10,6 +10,7 @@ import (
 	udp "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/udp/udp_proxy/v3"
 	envoyservicediscoveryv3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	listenerservice "github.com/envoyproxy/go-control-plane/envoy/service/listener/v3"
+	"github.com/go-logr/logr"
 	"github.com/golang/protobuf/ptypes/any"
 	"google.golang.org/protobuf/types/known/anypb"
 	"io"
@@ -40,6 +41,7 @@ func (s *listenerDiscoveryService) FetchListeners(_ context.Context, _ *envoyser
 func (s *listenerDiscoveryService) DeltaListeners(server listenerservice.ListenerDiscoveryService_DeltaListenersServer) error {
 	logger := ctrl.Log.WithName("LDS")
 	initialized := false
+	podName := ""
 	for {
 		//ddr delta discovery request
 		ddr, err := server.Recv()
@@ -48,24 +50,26 @@ func (s *listenerDiscoveryService) DeltaListeners(server listenerservice.Listene
 			return nil
 		}
 		if err != nil {
-			logger.Error(err, "ERROR")
-			return err
+			//TODO fix this but it might be a context canceled error
+			logger.Error(err, "Error occurred while receiving DDR")
+			return nil
 		}
-		logger.Info("Request:", "node id: ", ddr.Node.Id)
+		logger.Info("Request (if empty string then it's the first request)", "pod", podName, "uid", ddr.Node.Id)
 		if _, ok := state.LdsChannels[ddr.Node.Id]; !ok {
 			state.LdsChannels[ddr.Node.Id] = make(chan state.SignalMessageOnLdsChannels)
 			//logger.Info("Channel has been added for", "uid", ddr.Node.Id)
 		}
 		if !initialized {
-			deltaDiscoveryResponse, initMsg := initLDSConnection(ddr.Node.Id)
+			deltaDiscoveryResponse, pName, initMsg := initLDSConnection(logger, ddr.Node.Id)
+			podName = *pName
 			if initMsg != nil {
 				logger.Info(*initMsg)
 				initialized = true
 			} else {
 				sendErr := server.Send(deltaDiscoveryResponse)
 				if sendErr != nil {
-					logger.Error(sendErr, "Error occurred while SENDING listener configuration to envoy")
-					return sendErr
+					logger.Info("Error occurred while SENDING listener configuration to envoy", "error", sendErr.Error())
+					break
 				} else {
 					logger.Info("Initialization was successful for", "node", ddr.Node.Id)
 					initialized = true
@@ -84,8 +88,8 @@ func (s *listenerDiscoveryService) DeltaListeners(server listenerservice.Listene
 			//logger.Info("listeners", "l", listeners)
 			err = server.Send(createListenerDeltaDiscoveryResponse(listeners, nil))
 			if err != nil {
-				logger.Error(err, "Error occurred while SENDING listener configuration to envoy")
-				return err
+				logger.Info("Error occurred while SENDING listener configuration to envoy", "error", err.Error())
+				break
 			}
 
 		case state.Delete:
@@ -95,8 +99,8 @@ func (s *listenerDiscoveryService) DeltaListeners(server listenerservice.Listene
 			}
 			err = server.Send(createListenerDeltaDiscoveryResponse(nil, listenersToBeDeleted))
 			if err != nil {
-				logger.Error(err, "Error occurred while REMOVING listener configuration to envoy")
-				return err
+				logger.Info("Error occurred while REMOVING listener configuration from envoy", "error", err.Error())
+				break
 			}
 
 		case state.Change:
@@ -107,23 +111,45 @@ func (s *listenerDiscoveryService) DeltaListeners(server listenerservice.Listene
 	return nil
 }
 
-func initLDSConnection(uid string) (*envoyservicediscoveryv3.DeltaDiscoveryResponse, *string) {
+func initLDSConnection(logger logr.Logger, uid string) (*envoyservicediscoveryv3.DeltaDiscoveryResponse, *string, *string) {
 	podName := ""
-	for _, p := range state.ClusterState.Pods {
-		if string(p.UID) == uid {
-			podName = p.Name
-			for k, v := range p.Labels {
-				for _, vsvc := range state.ClusterState.Vsvcs {
+	var listeners []*listener.Listener
+	podsFromK8sApi, err := state.GetPodList(logger, nil)
+	if err != nil {
+		panic(err.Error())
+	}
+	for _, pod := range podsFromK8sApi.Items {
+		if string(pod.UID) == uid {
+			podName = pod.Name
+			//Get the list of available virturalservice resources from the K8s API
+			//To prevent unnecessary API request it's only done here, when it is actually necessary
+			vsvcs := l7mpiov1.VirtualServiceList{}
+			err := state.GetVirtualServiceList(logger, &vsvcs)
+			if err != nil {
+				msg := "Error happened while requesting VSVC list from the Kubernetes API"
+				return nil, &podName, &msg
+			}
+			for i, vsvc := range vsvcs.Items {
+				for k, v := range pod.Labels {
 					if vsvc.Spec.Selector[k] == v {
-						listeners := CreateEnvoyListenerConfigFromVsvcSpec(vsvc.Spec)
-						return createListenerDeltaDiscoveryResponse(listeners, nil), nil
+						listeners = append(listeners, CreateEnvoyListenerConfigFromVsvcSpec(vsvc.Spec)...)
+						//return createListenerDeltaDiscoveryResponse(listeners, nil), &podName, nil
+					}
+				}
+				if i+1 == len(vsvcs.Items) {
+					if len(listeners) > 0 {
+						return createListenerDeltaDiscoveryResponse(listeners, nil), &podName, nil
+					} else {
+						msg := "There is no VSVC in the kubernetes cluster that matches any of labels of this pod " + podName
+						//TODO handle return better
+						return nil, &podName, &msg
 					}
 				}
 			}
 		}
 	}
 	msg := "There is no VSVC in the kubernetes cluster that should be applied for this pod " + podName
-	return nil, &msg
+	return nil, &podName, &msg
 }
 
 func createListenerDeltaDiscoveryResponse(listenersToBeAdded []*listener.Listener, listenersToBeDeleted []string) *envoyservicediscoveryv3.DeltaDiscoveryResponse {
