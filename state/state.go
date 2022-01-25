@@ -1,12 +1,16 @@
 package state
 
 import (
+	"context"
 	"errors"
 	l7mpiov1 "github.com/davidkornel/operator/api/v1"
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -113,10 +117,14 @@ func (s *KubernetesCluster) GetAddressByUid(uid types.UID) (string, error) {
 	return "", errors.New("there is no pod with the given uid")
 }
 
-func (s *KubernetesCluster) GetUidListByLabel(m map[string]string) ([]string, error) {
+func (s *KubernetesCluster) GetUidListByLabel(logger logr.Logger, m map[string]string, notTerminating bool) ([]string, error) {
 	stringList := make([]string, 0)
+	podsFromK8sApi, err := GetPodList(logger, nil)
+	if err != nil {
+		panic(err.Error())
+	}
 	for k, v := range m {
-		for _, p := range s.Pods {
+		for _, p := range podsFromK8sApi.Items {
 			if p.Labels[k] == v {
 				stringList = append(stringList, string(p.UID))
 			}
@@ -129,12 +137,41 @@ func (s *KubernetesCluster) GetUidListByLabel(m map[string]string) ([]string, er
 	return stringList, nil
 }
 
-func (s *KubernetesCluster) RemoveElementFromSlice(element l7mpiov1.VirtualService) error {
+func (s *KubernetesCluster) RemoveElementFromSlice(logger logr.Logger, element l7mpiov1.VirtualService) {
 	for i, e := range ClusterState.Vsvcs {
 		if e.Name == element.Name {
 			s.Vsvcs = append(s.Vsvcs[:i], s.Vsvcs[i+1:]...)
-			return nil
 		}
 	}
-	return errors.New("could not remove vsvc from slice")
+	logger.Info("Could not remove virtualservice from stored list, may require further investigation or it may have been a leftover from a previous deployment")
+}
+
+func GetVirtualServiceList(logger logr.Logger, vsvcs *l7mpiov1.VirtualServiceList) error {
+	err := ClusterState.VsvcRestClient.Get().Resource("virtualservices").Do(context.TODO()).Into(vsvcs)
+	if err != nil {
+		logger.Error(err, "Error while asking K8s API for a VSVC list")
+		return err
+	} else {
+		logger.Info("Successfully got the list of VirtualServices from the K8s API", "number of vsvcs", len(vsvcs.Items))
+		return nil
+	}
+}
+
+func GetPodList(logger logr.Logger, selector *metav1.LabelSelector) (*v1.PodList, error) {
+	pods := &v1.PodList{}
+	var err error
+	if selector == nil {
+		pods, err = ClusterState.ClientSet.CoreV1().Pods("").
+			List(context.TODO(), metav1.ListOptions{})
+	} else {
+		pods, err = ClusterState.ClientSet.CoreV1().Pods("").
+			List(context.TODO(), metav1.ListOptions{LabelSelector: metav1.FormatLabelSelector(selector)})
+	}
+	if err != nil {
+		logger.Error(err, "Error while asking k8s API for a POD list")
+		return nil, err
+	} else {
+		logger.Info("Successfully got the list of VirtualServices from the K8s API", "", len(pods.Items))
+		return pods, nil
+	}
 }

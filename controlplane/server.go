@@ -20,9 +20,10 @@ import (
 	clusterservice "github.com/envoyproxy/go-control-plane/envoy/service/cluster/v3"
 	endpointservice "github.com/envoyproxy/go-control-plane/envoy/service/endpoint/v3"
 	listenerservice "github.com/envoyproxy/go-control-plane/envoy/service/listener/v3"
-	cachev3 "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"net"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
@@ -31,9 +32,9 @@ const (
 	grpcMaxConcurrentStreams = 1000000
 )
 
-var (
-	cache cachev3.SnapshotCache
-)
+//var (
+//	cache cachev3.SnapshotCache
+//)
 
 func registerServer(
 	grpcServer *grpc.Server, ldsServer listenerservice.ListenerDiscoveryServiceServer,
@@ -86,31 +87,43 @@ func PodHandler() {
 		//Both cases are handled the same because the new pod's identity
 		case state.Add:
 			logger.Info("ADD ACTION")
-			Action(logger, podMessage.Pod.Labels)
+			Action(logger, podMessage.Pod)
 		case state.Delete:
 			logger.Info("DELETE ACTION")
-			Action(logger, podMessage.Pod.Labels)
+			Action(logger, podMessage.Pod)
 		}
 	}
 }
 
-func Action(logger logr.Logger, labels map[string]string) {
+func Action(logger logr.Logger, podParam *corev1.Pod) {
 	var epList []ds.Endpoint
 	//If there is a connected eds client which waits for pods with the same label as the pod on the channel then
 	// get the full list of pods with the same matching pod label
 	for edsKey, edsValue := range state.ConnectedEdsClients {
-		for labelKey, labelValue := range labels {
+		for labelKey, labelValue := range podParam.Labels {
 			//Process further only if the eds client's label selector matches one of the new pod's labels
 			if (*edsValue.Endpoint.Host.Selector)[labelKey] == labelValue {
-				for _, pod := range state.ClusterState.Pods {
-					if pod.Labels[labelKey] == labelValue {
+				selector := metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key:      labelKey,
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{labelValue}}},
+				}
+				podsFromK8sApi, err := state.GetPodList(logger, &selector)
+				if err != nil {
+					panic(err.Error())
+				}
+				//logger.Info("Number of pods from k8s api", "", len(podsFromK8sApi.Items))
+				for _, pod := range podsFromK8sApi.Items {
+					if pod.Labels[labelKey] == labelValue &&
+						pod.DeletionTimestamp == nil &&
+						pod.Status.PodIP != "" {
 						ep := ds.Endpoint{
 							Name:    edsKey + pod.Name,
 							Address: pod.Status.PodIP,
 							Ep:      state.ConnectedEdsClients[edsKey].Endpoint,
 							Port:    state.ConnectedEdsClients[edsKey].Endpoint.Port,
 						}
-						//logger.Info("EDS label selector match with pod", "", labelKey, "", labelValue, "", ep)
 						epList = append(epList, ep)
 					}
 				}
@@ -132,7 +145,7 @@ func VirtualServiceSpecHandler() {
 	logger := ctrl.Log.WithName("Vsvc spec handler")
 	for {
 		spec := <-state.VsvcChannel
-		uids, err := state.ClusterState.GetUidListByLabel(spec.Selector)
+		uids, err := state.ClusterState.GetUidListByLabel(logger, spec.Selector, true)
 		if err != nil {
 			logger.Info("Non fatal error happened while trying to get uid by label selector")
 		} else {
@@ -141,18 +154,28 @@ func VirtualServiceSpecHandler() {
 				if _, ok := state.LdsChannels[uid]; !ok {
 					state.LdsChannels[uid] = make(chan state.SignalMessageOnLdsChannels)
 					logger.Info("LDS channel has been added for", "uid", uid)
+					state.LdsChannels[uid] <- state.SignalMessageOnLdsChannels{
+						Verb:      0, //Add
+						Resources: ds.CreateEnvoyListenerConfigFromVsvcSpec(spec),
+					}
+				} else {
+					state.LdsChannels[uid] <- state.SignalMessageOnLdsChannels{
+						Verb:      0, //Add
+						Resources: ds.CreateEnvoyListenerConfigFromVsvcSpec(spec),
+					}
 				}
 				if _, ok := state.CdsChannels[uid]; !ok {
 					state.CdsChannels[uid] = make(chan state.SignalMessageOnCdsChannels)
 					logger.Info("CDS channel has been added for", "uid", uid)
-				}
-				state.LdsChannels[uid] <- state.SignalMessageOnLdsChannels{
-					Verb:      0, //Add
-					Resources: ds.CreateEnvoyListenerConfigFromVsvcSpec(spec),
-				}
-				state.CdsChannels[uid] <- state.SignalMessageOnCdsChannels{
-					Verb:      0,
-					Resources: ds.CreateEnvoyClusterConfigFromVsvcSpec(spec, uid),
+					state.CdsChannels[uid] <- state.SignalMessageOnCdsChannels{
+						Verb:      0,
+						Resources: ds.CreateEnvoyClusterConfigFromVsvcSpec(spec, uid),
+					}
+				} else {
+					state.CdsChannels[uid] <- state.SignalMessageOnCdsChannels{
+						Verb:      0,
+						Resources: ds.CreateEnvoyClusterConfigFromVsvcSpec(spec, uid),
+					}
 				}
 			}
 		}
