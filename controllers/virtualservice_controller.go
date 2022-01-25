@@ -75,7 +75,7 @@ func (r *VirtualServiceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, nil
 		} else {
 			//logger.Info("DELETE RESOURCE ", "vsvc", virtualservice.Name)
-			if uids, err := state.ClusterState.GetUidListByLabel(virtualservice.Spec.Selector); err == nil {
+			if uids, err := state.ClusterState.GetUidListByLabel(logger, virtualservice.Spec.Selector, false); err == nil {
 				for _, uid := range uids {
 					state.LdsChannels[uid] <- state.SignalMessageOnLdsChannels{
 						Verb:      1, //Delete
@@ -86,17 +86,11 @@ func (r *VirtualServiceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 						Resources: ds.CreateEnvoyClusterConfigFromVsvcSpec(virtualservice.Spec, uid),
 					}
 				}
-			} else {
-				logger.Error(err, "NOT FATAL")
-				return ctrl.Result{}, nil
 			}
 			logger.Info("Removing vsvc", "vsvc", virtualservice.Name)
-			err := state.ClusterState.RemoveElementFromSlice(*virtualservice)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
+			state.ClusterState.RemoveElementFromSlice(logger, *virtualservice)
 			controllerutil.RemoveFinalizer(virtualservice, vsvcFinalizer)
-			err = r.Update(ctx, virtualservice)
+			err := r.Update(ctx, virtualservice)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
