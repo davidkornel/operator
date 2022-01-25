@@ -50,30 +50,35 @@ func (c clusterDiscoveryService) FetchClusters(_ context.Context, _ *envoyservic
 func (c clusterDiscoveryService) DeltaClusters(server clusterservice.ClusterDiscoveryService_DeltaClustersServer) error {
 	logger := ctrl.Log.WithName("CDS")
 	initialized := false
+	podName := ""
 	for {
 		//ddr delta discovery request
 		ddr, err := server.Recv()
 		if err == io.EOF {
+			logger.Info("EOF")
 			return nil
 		}
 		if err != nil {
-			return err
+			//TODO fix this but it might be a context canceled error
+			logger.Error(err, "Error occurred while receiving DDR")
+			break
 		}
-		logger.Info("Request:", "Node-id: ", ddr.Node.Id)
+		logger.Info("Request (if empty string then it's the first request)", "pod", podName, "uid", ddr.Node.Id)
 		if _, ok := state.CdsChannels[ddr.Node.Id]; !ok {
 			state.CdsChannels[ddr.Node.Id] = make(chan state.SignalMessageOnCdsChannels)
 			//logger.Info("Channel has been added for", "uid", ddr.Node.Id)
 		}
 		if !initialized {
-			deltaDiscoveryResponse, initMsg := initCDSConnection(logger, ddr.Node.Id)
+			deltaDiscoveryResponse, cName, initMsg := initCDSConnection(logger, ddr.Node.Id)
+			podName = *cName
 			if initMsg != nil {
 				logger.Info(*initMsg)
 				initialized = true
 			} else {
 				sendErr := server.Send(deltaDiscoveryResponse)
 				if sendErr != nil {
-					logger.Error(sendErr, "Error occurred while SENDING cluster configuration to envoy")
-					return sendErr
+					logger.Info("Error occurred while SENDING cluster configuration to envoy", "error", sendErr.Error())
+					break
 				} else {
 					logger.Info("Initialization was successful for", "node", ddr.Node.Id)
 					initialized = true
@@ -93,8 +98,8 @@ func (c clusterDiscoveryService) DeltaClusters(server clusterservice.ClusterDisc
 			err = server.Send(createClusterDeltaDiscoveryResponse(clusters, nil))
 			logger.Info("Clusters to be added", "num", len(clusters))
 			if err != nil {
-				logger.Error(err, "Error occurred while SENDING cluster configuration to envoy")
-				return err
+				logger.Info("Error occurred while SENDING cluster configuration to envoy", "error", err.Error())
+				break
 			}
 
 		case state.Delete:
@@ -105,8 +110,8 @@ func (c clusterDiscoveryService) DeltaClusters(server clusterservice.ClusterDisc
 			logger.Info("Clusters to be removed", "clusters", clustersToBeDeleted)
 			err = server.Send(createClusterDeltaDiscoveryResponse(nil, clustersToBeDeleted))
 			if err != nil {
-				logger.Error(err, "Error occurred while REMOVING cluster configuration from envoy")
-				return err
+				logger.Info("Error occurred while REMOVING cluster configuration from envoy", "error", err.Error())
+				break
 			}
 
 		case state.Change:
@@ -128,21 +133,21 @@ func contains(logger logr.Logger, e types.UID) *v1.Pod {
 	return nil
 }
 
-func initCDSConnection(logger logr.Logger, uid string) (*envoyservicediscoveryv3.DeltaDiscoveryResponse, *string) {
+func initCDSConnection(logger logr.Logger, uid string) (*envoyservicediscoveryv3.DeltaDiscoveryResponse, *string, *string) {
 	podName := ""
 	var clusters []*cluster.Cluster
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(25 * time.Second)
 	UID := types.UID(uid)
 	logger.Info("initCDS", "uid", uid)
 	for {
+		//TODO REFACTOR the code below, should look like initLDS...
 		if p := contains(logger, UID); p != nil {
 			podName = p.Name
 			vsvcs := l7mpiov1.VirtualServiceList{}
-			err := state.ClusterState.VsvcRestClient.Get().Resource("virtualservices").Do(context.TODO()).Into(&vsvcs)
+			err := state.GetVirtualServiceList(logger, &vsvcs)
 			if err != nil {
-				logger.Error(err, "Error while asking K8s API for a VSVC list")
-			} else {
-				logger.Info("Successfully got the list of VirtualServices from the K8s API", "number of vsvcs", len(vsvcs.Items))
+				msg := "Error happened while requesting VSVC list from the Kubernetes API"
+				return nil, &podName, &msg
 			}
 			for i, vsvc := range vsvcs.Items {
 				for k, v := range p.Labels {
@@ -152,24 +157,24 @@ func initCDSConnection(logger logr.Logger, uid string) (*envoyservicediscoveryv3
 				}
 				if i+1 == len(vsvcs.Items) {
 					if len(clusters) > 0 {
-						return createClusterDeltaDiscoveryResponse(clusters, nil), nil
+						return createClusterDeltaDiscoveryResponse(clusters, nil), &podName, nil
 					} else {
 						msg := "There is no VSVC in the kubernetes cluster that matches any of labels of this pod " + podName
 						//TODO handle return better
-						return nil, &msg
+						return nil, &podName, &msg
 					}
 				}
 			}
 			msg := "There is no VSVC in the kubernetes cluster that should be applied for this pod " + podName
 			//TODO handle return better
-			return nil, &msg
+			return nil, &podName, &msg
 		} else {
 			time.Sleep(500 * time.Millisecond)
 		}
 		if time.Now().After(deadline) {
-			msg := "Pod not appeared to be ready for 20 seconds"
+			msg := "Pod not appeared to be ready for 25 seconds"
 			logger.Error(errors.New("deadline passed"), msg)
-			return nil, &msg
+			return nil, &podName, &msg
 		}
 	}
 }
@@ -213,7 +218,8 @@ func CreateEnvoyClusterConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec, uid 
 			//		TableSize: &wrappers.UInt64Value{Value: 5},
 			//	},
 			//},
-			LbPolicy: cluster.Cluster_MAGLEV,
+			LbPolicy:                  cluster.Cluster_MAGLEV,
+			IgnoreHealthOnHostRemoval: true,
 		}
 		if l.Udp.Cluster.HealthCheck != nil {
 			if l.Udp.Cluster.HealthCheck.Protocol == "TCP" {
@@ -222,20 +228,25 @@ func CreateEnvoyClusterConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec, uid 
 					Interval:           durationpb.New(time.Duration(l.Udp.Cluster.HealthCheck.Interval) * time.Millisecond),
 					UnhealthyThreshold: &wrappers.UInt32Value{Value: 1},
 					HealthyThreshold:   &wrappers.UInt32Value{Value: 1},
-					HealthChecker: &core.HealthCheck_TcpHealthCheck_{
-						TcpHealthCheck: &core.HealthCheck_TcpHealthCheck{
-							Send: &core.HealthCheck_Payload{
-								Payload: &core.HealthCheck_Payload_Text{
-									Text: "000000FF",
-								},
-							},
-							Receive: []*core.HealthCheck_Payload{{
-								Payload: &core.HealthCheck_Payload_Text{
-									Text: "000000FF",
-								},
-							}},
+					HealthChecker: &core.HealthCheck_HttpHealthCheck_{
+						HttpHealthCheck: &core.HealthCheck_HttpHealthCheck{
+							Path: "/healthcheck",
 						},
 					},
+					//HealthChecker: &core.HealthCheck_TcpHealthCheck_{
+					//	TcpHealthCheck: &core.HealthCheck_TcpHealthCheck{
+					//		Send: &core.HealthCheck_Payload{
+					//			Payload: &core.HealthCheck_Payload_Text{
+					//				Text: "000000FF",
+					//			},
+					//		},
+					//		Receive: []*core.HealthCheck_Payload{{
+					//			Payload: &core.HealthCheck_Payload_Text{
+					//				Text: "000000FF",
+					//			},
+					//		}},
+					//	},
+					//},
 					NoTrafficInterval: durationpb.New(time.Duration(l.Udp.Cluster.HealthCheck.Interval) * time.Millisecond),
 				}}
 			}
@@ -353,20 +364,21 @@ func createLoadBalancerStruct(value string) map[string]*structpb.Struct {
 }
 
 func fillAddress(host l7mpiov1.Host) []string {
+	logger := ctrl.Log.WithName("Fill address")
 	addressList := make([]string, 0)
 	if host.Address != nil {
 		addressList = append(addressList, *host.Address)
 		return addressList
 	}
 	if host.Selector != nil {
-		uids, err := state.ClusterState.GetUidListByLabel(*host.Selector)
+		uids, err := state.ClusterState.GetUidListByLabel(logger, *host.Selector, false)
 		if err != nil {
-			ctrl.Log.WithName("Fill address").Error(err, "")
+			logger.Error(err, "Getting UID list failed")
 		}
 		for _, uid := range uids {
 			address, e := state.ClusterState.GetAddressByUid(types.UID(uid))
 			if e != nil {
-				ctrl.Log.WithName("Fill address").Error(e, "")
+				logger.Error(err, "Getting address failed")
 			}
 			addressList = append(addressList, address)
 		}
