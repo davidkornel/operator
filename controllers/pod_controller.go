@@ -69,25 +69,26 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		logger.Error(err, "unable to fetch Pod")
 		return ctrl.Result{}, err
 	}
-	isPodMarkedToBeDeleted := pod.GetDeletionTimestamp() != nil
-	if isPodMarkedToBeDeleted {
+	//if true then pod is marked to be deleted
+	if pod.GetDeletionTimestamp() != nil {
 		for _, p := range state.ClusterState.Pods {
 			if p.UID == pod.UID {
 				var ldsChan chan state.SignalMessageOnLdsChannels
 				var cdsChan chan state.SignalMessageOnCdsChannels
 				if _, ok := state.LdsChannels[string(pod.UID)]; ok {
 					ldsChan = state.LdsChannels[string(pod.UID)]
+					logger.Info("length of ldschannels before deletion", "len", len(state.LdsChannels))
 					delete(state.LdsChannels, string(pod.UID))
+					logger.Info("length of ldschannels after deletion", "len", len(state.LdsChannels))
+					logger.Info("Deleted LDS channel for", "pod", pod.UID)
 				}
 				if _, ok := state.CdsChannels[string(pod.UID)]; ok {
 					cdsChan = state.CdsChannels[string(pod.UID)]
 					delete(state.CdsChannels, string(pod.UID))
+					logger.Info("Deleted CDS channel for", "pod", pod.UID)
 				}
 				go r.CloseChannels(logger, ctx, pod, ldsChan, cdsChan)
-				state.PodChannel <- state.SignalMessageOnPodChannel{
-					Verb: 1,
-					Pod:  &pod,
-				}
+
 				return ctrl.Result{}, nil
 			}
 		}
@@ -97,7 +98,7 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		labelIsPresent := pod.Labels[labelKeys] == label
 		if labelIsPresent {
 			//TODO should we wait till the pod is in phase running or not???
-			if pod.Status.Phase == "Running" && pod.Status.PodIP != "" {
+			if isPodReadyConditionTrue(pod.Status) && pod.Status.PodIP != "" {
 				for i, p := range state.ClusterState.Pods {
 					if p.UID == pod.UID {
 						state.ClusterState.Pods[i] = pod
@@ -147,6 +148,10 @@ func (r *PodReconciler) CloseChannels(logger logr.Logger,
 						logger.Info("Closing eds channel")
 					}
 				}
+				state.PodChannel <- state.SignalMessageOnPodChannel{
+					Verb: 1,
+					Pod:  &pod,
+				}
 				logger.Info("Successfully removed pod from Pods", "pod", pod.Name, "uid", pod.UID, "num of pods left", len(state.ClusterState.Pods))
 				return
 			}
@@ -171,4 +176,44 @@ func remove(pods []corev1.Pod, uid types.UID) []corev1.Pod {
 	}
 	ctrl.Log.WithName("POD_DEL").Info("Pod might have been removed previously, this should not happen")
 	return pods
+}
+
+/*
+Had to import the functions below from the k8s.io/kubectl/ package.
+It is not working for months now because there's a bump between package versions
+*/
+// IsPodReadyConditionTrue returns true if a pod is ready; false otherwise.
+func isPodReadyConditionTrue(status corev1.PodStatus) bool {
+	condition := getPodReadyCondition(status)
+	return condition != nil && condition.Status == corev1.ConditionTrue
+}
+
+// GetPodReadyCondition extracts the pod ready condition from the given status and returns that.
+// Returns nil if the condition is not present.
+func getPodReadyCondition(status corev1.PodStatus) *corev1.PodCondition {
+	_, condition := getPodCondition(&status, corev1.PodReady)
+	return condition
+}
+
+// GetPodCondition extracts the provided condition from the given status and returns that.
+// Returns nil and -1 if the condition is not present, and the index of the located condition.
+func getPodCondition(status *corev1.PodStatus, conditionType corev1.PodConditionType) (int, *corev1.PodCondition) {
+	if status == nil {
+		return -1, nil
+	}
+	return getPodConditionFromList(status.Conditions, conditionType)
+}
+
+// GetPodConditionFromList extracts the provided condition from the given list of condition and
+// returns the index of the condition and the condition. Returns -1 and nil if the condition is not present.
+func getPodConditionFromList(conditions []corev1.PodCondition, conditionType corev1.PodConditionType) (int, *corev1.PodCondition) {
+	if conditions == nil {
+		return -1, nil
+	}
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return i, &conditions[i]
+		}
+	}
+	return -1, nil
 }
