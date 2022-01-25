@@ -58,7 +58,7 @@ func (e endpointDiscoveryService) DeltaEndpoints(server endpointservice.Endpoint
 		if err != nil {
 			return err
 		}
-		logger.Info("Request:", "Node-id: ", ddr.Node.Id, "rns", ddr.ResourceNamesSubscribe)
+		//logger.Info("Request (if empty string then it's the first request)", "OwnerCluster:", ownerCluster)
 		if ownerCluster == "" {
 			//init message
 			ownerCluster = ddr.ResourceNamesSubscribe[0]
@@ -76,7 +76,7 @@ func (e endpointDiscoveryService) DeltaEndpoints(server endpointservice.Endpoint
 					} else {
 						err = server.Send(deltaDiscoveryResponse)
 						if err != nil {
-							logger.Error(err, "Error occurred while SENDING listener configuration to envoy")
+							logger.Info("Error occurred while SENDING listener configuration to envoy", "error", err.Error())
 						} else {
 							logger.Info("Initial update was successful for cluster",
 								"cluster's name", ownerCluster,
@@ -101,7 +101,7 @@ func (e endpointDiscoveryService) DeltaEndpoints(server endpointservice.Endpoint
 				logger.Error(err, "Error occurred while SENDING endpoint configuration to envoy")
 				return err
 			} else {
-				logger.Info("EDS response", "number of endpoints", len(edsMessage.Resource.Endpoints), "endpoints", edsMessage.Resource.Endpoints)
+				//logger.Info("EDS response", "number of endpoints", len(edsMessage.Resource.Endpoints[0].LbEndpoints), "endpoints", edsMessage.Resource.Endpoints)
 			}
 		}
 
@@ -153,7 +153,6 @@ func CreateEdsEndpoint(_ logr.Logger, endpoints []Endpoint, clusterName string) 
 	loadAssignment := &endpointv3.ClusterLoadAssignment{
 		ClusterName: clusterName,
 	}
-
 	for _, e := range endpoints {
 		newEndpoint := &endpointv3.LbEndpoint{
 			HostIdentifier: &endpointv3.LbEndpoint_Endpoint{
