@@ -146,13 +146,14 @@ func (s *KubernetesCluster) RemoveElementFromSlice(logger logr.Logger, element l
 	logger.Info("Could not remove virtualservice from stored list, may require further investigation or it may have been a leftover from a previous deployment")
 }
 
+// GetVirtualServiceList TODO this results is too many API request, with higher nums of calls it might fail or take too much time
 func GetVirtualServiceList(logger logr.Logger, vsvcs *l7mpiov1.VirtualServiceList) error {
 	err := ClusterState.VsvcRestClient.Get().Resource("virtualservices").Do(context.TODO()).Into(vsvcs)
 	if err != nil {
 		logger.Error(err, "Error while asking K8s API for a VSVC list")
 		return err
 	} else {
-		logger.Info("Successfully got the list of VirtualServices from the K8s API", "number of vsvcs", len(vsvcs.Items))
+		//logger.Info("Successfully got the list of VirtualServices from the K8s API", "number of vsvcs", len(vsvcs.Items))
 		return nil
 	}
 }
@@ -171,7 +172,7 @@ func GetPodList(logger logr.Logger, selector *metav1.LabelSelector) (*v1.PodList
 		logger.Error(err, "Error while asking k8s API for a POD list")
 		return nil, err
 	} else {
-		logger.Info("Successfully got the list of VirtualServices from the K8s API", "", len(pods.Items))
+		//logger.Info("Successfully got the list of Pods from the K8s API", "", len(pods.Items))
 		return pods, nil
 	}
 }
