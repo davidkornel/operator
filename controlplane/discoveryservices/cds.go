@@ -12,6 +12,7 @@ import (
 	endpointv3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	clusterservice "github.com/envoyproxy/go-control-plane/envoy/service/cluster/v3"
 	envoyservicediscoveryv3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	envoytypev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/go-logr/logr"
 	"github.com/golang/protobuf/ptypes/any"
 	_struct "github.com/golang/protobuf/ptypes/struct"
@@ -123,7 +124,11 @@ func (c clusterDiscoveryService) DeltaClusters(server clusterservice.ClusterDisc
 }
 
 func contains(logger logr.Logger, e types.UID) *v1.Pod {
-	for _, a := range state.ClusterState.Pods {
+	podsFromK8sApi, err := state.GetPodList(logger, nil)
+	if err != nil {
+		panic(err.Error())
+	}
+	for _, a := range podsFromK8sApi.Items {
 		//logger.Info("contains", "got uid", string(e), "pods uid", string(a.UID), "podname", a.Name)
 		if a.UID == e {
 			logger.Info("contains MATCH", "pod", a.Name)
@@ -136,7 +141,7 @@ func contains(logger logr.Logger, e types.UID) *v1.Pod {
 func initCDSConnection(logger logr.Logger, uid string) (*envoyservicediscoveryv3.DeltaDiscoveryResponse, *string, *string) {
 	podName := ""
 	var clusters []*cluster.Cluster
-	deadline := time.Now().Add(25 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	UID := types.UID(uid)
 	logger.Info("initCDS", "uid", uid)
 	for {
@@ -172,7 +177,7 @@ func initCDSConnection(logger logr.Logger, uid string) (*envoyservicediscoveryv3
 			time.Sleep(500 * time.Millisecond)
 		}
 		if time.Now().After(deadline) {
-			msg := "Pod not appeared to be ready for 25 seconds"
+			msg := "Pod not appeared to be ready for 30 seconds"
 			logger.Error(errors.New("deadline passed"), msg)
 			return nil, &podName, &msg
 		}
@@ -218,7 +223,12 @@ func CreateEnvoyClusterConfigFromVsvcSpec(spec l7mpiov1.VirtualServiceSpec, uid 
 			//		TableSize: &wrappers.UInt64Value{Value: 5},
 			//	},
 			//},
-			LbPolicy:                  cluster.Cluster_MAGLEV,
+			LbPolicy: cluster.Cluster_MAGLEV,
+			CommonLbConfig: &cluster.Cluster_CommonLbConfig{
+				HealthyPanicThreshold: &envoytypev3.Percent{
+					Value: 0.0,
+				},
+			},
 			IgnoreHealthOnHostRemoval: true,
 		}
 		if l.Udp.Cluster.HealthCheck != nil {
